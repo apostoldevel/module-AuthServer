@@ -84,13 +84,13 @@ state | `state` | **Рекомендуемый**. Набор случайных 
 
 **Пример зпроса:**
 ```http request
-GET /oauth2/authorize?client_id=web-service.ru&redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Foauth2%2Fcode&scope=api&response_type=code&access_type=online&state=c2FmZXR HTTP/1.1
+GET /oauth2/authorize?client_id=YOUR-CLIENT-ID&redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Foauth2%2Fcode&scope=api&response_type=code&access_type=online&state=c2FmZXR HTTP/1.1
 Host: localhost:8080
 ```
 
 ```
 http://localhost:8080/oauth2/authorize?
-  client_id=web-service.ru&
+  client_id=YOUR-CLIENT-ID&
   redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Foauth2%2Fcode&
   response_type=code&
   access_type=online&
@@ -155,8 +155,8 @@ id_token | STRING | * Маркер пользователя.
 POST http://localhost:8080/oauth2/token
 Content-Type: application/x-www-form-urlencoded
  
-client_id=web-service.ru&
-client_secret=<client_secret>&
+client_id=YOUR-CLIENT-ID&
+client_secret=YOUR-CLIENT-SECRET&
 grant_type=authorization_code&
 code=b%2F8NpjbB4eLaukGr68tE7maTCeBISO%2FC7hWxKGuKb8I4Ysc7uw8a2MRUMWnO3Nzt&
 redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Foauth2%2Fcode
@@ -192,13 +192,13 @@ state | `state` | **Рекомендуемый**. Набор случайных 
 
 **Пример зпроса:**
 ```http request
-GET /oauth2/authorize?client_id=web-service.ru&redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Foauth2%2Fcallback&scope=api&response_type=token&state=c2FmZXR HTTP/1.1
+GET /oauth2/authorize?client_id=YOUR-CLIENT-ID&redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Foauth2%2Fcallback&scope=api&response_type=token&state=c2FmZXR HTTP/1.1
 Host: localhost:8080
 ```
 
 ```
 http://localhost:8080/oauth2/authorize?
-  client_id=web-service.ru&
+  client_id=YOUR-CLIENT-ID&
   redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Foauth2%2Fcallback&
   response_type=token&
   scope=api&
@@ -267,8 +267,8 @@ id_token | STRING | * Маркер пользователя.
 POST http://localhost:8080/oauth2/token
 Content-Type: application/x-www-form-urlencoded
  
-client_id=web-service.ru&
-client_secret=<client_secret>&
+client_id=YOUR-CLIENT-ID&
+client_secret=YOUR-CLIENT-SECRET&
 grant_type=password&
 username=admin&
 password=admin
@@ -317,8 +317,8 @@ id_token | STRING | * Маркер пользователя.
 POST http://localhost:8080/oauth2/token
 Content-Type: application/x-www-form-urlencoded
  
-client_id=web-service.ru&
-client_secret=<client_secret>&
+client_id=YOUR-CLIENT-ID&
+client_secret=YOUR-CLIENT-SECRET&
 grant_type=client_credentials
 ```
 
@@ -348,8 +348,8 @@ Authorization: Basic d2ViLXNlcnZpY2UucnU6Y2xpZW50IHNlY3JldA==
 POST http://localhost:8080/oauth2/token
 Content-Type: application/x-www-form-urlencoded
  
-client_id=web-service.ru&
-client_secret=<client_secret>&
+client_id=YOUR-CLIENT-ID&
+client_secret=YOUR-CLIENT-SECRET&
 grant_type=refresh_token&
 refresh_token=e%2FdtGmXCIzHvPMURn%2FTH9udTPxtKpR5FFifx2uvH1WqT4myXLtgyjkLgYDy7g3Ik5MrFRR82
 ```
@@ -357,3 +357,72 @@ refresh_token=e%2FdtGmXCIzHvPMURn%2FTH9udTPxtKpR5FFifx2uvH1WqT4myXLtgyjkLgYDy7g3
 ###### * Хоть это и не определено спецификацией, но сервер авторизации примет запрос и в формате JSON (Content-Type: `application/json`) 
 
 Если учётные данные клиента корректны, то сервер авторизации вернёт новый маркер краткосрочного доступа и новый маркер обновления.
+
+### Грант на продление
+
+* Грант на продление позволяет получить новый маркер доступа до истечения срока его действия.
+
+**Параметры запроса:**
+
+Поле | Значение | Описание
+------------ | :------------: | ------------
+client_id | `client_id` | **Обязательный**. Идентификатор клиента.
+client_secret | `client_secret` | **Обязательный**. Секрет клиента.
+grant_type | urn:ietf:params:oauth:grant-type:token-exchange | **Обязательный**. Как определено в [спецификации](https://tools.ietf.org/html/rfc8693#appendix-A.2), это поле должно содержать значение urn:ietf:params:oauth:grant-type:token-exchange.
+subject_token | `subject_token` | **Обязательный**. Маркер, выданный ранее.
+subject_token_type | `subject_token_type` | **Рекомендуемый**. Тип передаваемого маркера. Доступные значения: urn:ietf:params:oauth:token-type:jwt (по умолчанию), urn:ietf:params:oauth:token-type:access_token, urn:ietf:params:oauth:token-type:refresh_token, urn:ietf:params:oauth:token-type:id_token.  
+scope | `scope` | **Рекомендуемый**. Список областей, разделенных пробелами, которые определяют ресурсы, к которым ваше приложение может получить доступ от имени пользователя.
+
+* Согласно [спецификации](https://tools.ietf.org/html/rfc6749#section-2.3.1) OAuth 2.0, параметры авторизации клиента (`client_id` и `client_secret`) могут быть переданы как в теле запроса так и в HTTP заголовке `Authorization` (HTTP Basic authentication).
+
+```
+Authorization: Basic d2ViLXNlcnZpY2UucnU6Y2xpZW50IHNlY3JldA==   
+```
+
+**Пример зпроса:**
+
+```http request
+POST http://localhost:8080/oauth2/token
+Content-Type: application/x-www-form-urlencoded
+ 
+client_id=YOUR-CLIENT-ID&
+client_secret=YOUR-CLIENT-SECRET&
+grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange&
+subject_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[сокращенно для краткости].NorYsi-Ht826HUFCEArVZ60_dEUmYiJYXubnTyweIMg&
+subject_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Ajwt
+```
+
+###### * Хоть это и не определено спецификацией, но сервер авторизации примет запрос и в формате JSON (Content-Type: `application/json`) 
+
+Если учётные данные клиента корректны и у переданного маркера доступа не истек срок, то сервер авторизации вернёт новый маркер краткосрочного доступа и новый маркер обновления.
+
+### Использование маркера JWT в качестве гранта авторизации
+
+* Данный тип гранта позволяет авторизоваться в системе по данным из JWT маркера выпущенного другой (внешней) системой, например Google.
+
+**Параметры запроса:**
+
+Поле | Значение | Описание
+------------ | :------------: | ------------
+client_id | `client_id` | **Обязательный**. Идентификатор клиента.
+client_secret | `client_secret` | **Обязательный**. Секрет клиента.
+grant_type | urn:ietf:params:oauth:grant-type:jwt-bearer | **Обязательный**. Это поле должно содержать значение urn:ietf:params:oauth:grant-type:jwt-bearer.
+assertion | `assertion` | **Обязательный**. Маркер JWT выданный другой (внешней) системой.
+
+* Согласно [спецификации](https://tools.ietf.org/html/rfc6749#section-2.3.1) OAuth 2.0, параметры авторизации клиента (`client_id` и `client_secret`) могут быть переданы как в теле запроса так и в HTTP заголовке `Authorization` (HTTP Basic authentication).
+
+```
+Authorization: Basic d2ViLXNlcnZpY2UucnU6Y2xpZW50IHNlY3JldA==   
+```
+
+**Пример зпроса:**
+
+```http request
+POST http://localhost:8080/oauth2/token
+Content-Type: application/x-www-form-urlencoded
+ 
+client_id=YOUR-CLIENT-ID&
+client_secret=YOUR-CLIENT-SECRET&
+grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&
+assertion=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[сокращенно для краткости].NorYsi-Ht826HUFCEArVZ60_dEUmYiJYXubnTyweIMg
+```

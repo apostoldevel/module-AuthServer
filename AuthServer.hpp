@@ -46,6 +46,8 @@ namespace Apostol {
 
             void LoadCerts();
 
+            static void AfterQuery(CHTTPServerConnection *AConnection, const CString &Path, const CJSON &Payload);
+
             static void QueryException(CPQPollQuery *APollQuery, const std::exception &e);
 
             CString CreateToken(const CCleanToken& CleanToken);

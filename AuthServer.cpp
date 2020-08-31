@@ -165,6 +165,13 @@ namespace Apostol {
         }
         //--------------------------------------------------------------------------------------------------------------
 
+        void CAuthServer::AfterQuery(CHTTPServerConnection *AConnection, const CString &Path, const CJSON &Payload) {
+            if (Path == _T("/sign/in/token")) {
+                SetAuthorizationData(AConnection, Payload);
+            }
+        }
+        //--------------------------------------------------------------------------------------------------------------
+
         void CAuthServer::DoPostgresQueryExecuted(CPQPollQuery *APollQuery) {
             clock_t start = clock();
 
@@ -195,6 +202,9 @@ namespace Apostol {
                     if (LResult->nTuples() == 1) {
                         const CJSON Payload(LResult->GetValue(0, 0));
                         LStatus = ErrorCodeToStatus(CheckError(Payload, ErrorMessage));
+                        if (LStatus == CReply::ok) {
+                            AfterQuery(LConnection, Path, Payload);
+                        }
                     }
 
                     PQResultToJson(LResult, LReply->Content);

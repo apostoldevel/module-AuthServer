@@ -1128,7 +1128,7 @@ namespace Apostol {
             }
 
             auto &LClientManager = m_pModuleProcess->ClientManager();
-            LClientManager.Shrink();
+            LClientManager.CleanUp();
         }
         //--------------------------------------------------------------------------------------------------------------
 

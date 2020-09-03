@@ -186,7 +186,7 @@ namespace Apostol {
 
             auto LConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->PollConnection());
 
-            if (LConnection != nullptr) {
+            if (LConnection != nullptr && !LConnection->ClosedGracefully()) {
 
                 const auto& Path = LConnection->Data()["path"].Lower();
 
@@ -255,7 +255,7 @@ namespace Apostol {
 
             auto LConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->PollConnection());
 
-            if (LConnection != nullptr) {
+            if (LConnection != nullptr && !LConnection->ClosedGracefully()) {
                 auto LReply = LConnection->Reply();
 
                 const auto& LRedirect = LConnection->Data()["redirect_error"];
@@ -783,7 +783,7 @@ namespace Apostol {
 
         void CAuthServer::DoGet(CHTTPServerConnection *AConnection) {
 
-            auto OnRequestToken = [this](CHTTPClient *Sender, CRequest *Request) {
+            auto OnRequestToken = [](CHTTPClient *Sender, CRequest *Request) {
 
                 const auto &token_uri = Sender->Data()["token_uri"];
                 const auto &code = Sender->Data()["code"];
@@ -815,9 +815,15 @@ namespace Apostol {
             auto OnReplyToken = [this, AConnection](CTCPConnection *Sender) {
 
                 auto LConnection = dynamic_cast<CHTTPClientConnection *> (Sender);
+                auto LClient = LConnection->Client();
                 auto LReply = LConnection->Reply();
 
                 DebugReply(LReply);
+
+                LConnection->CloseConnection(true);
+
+                if (AConnection->ClosedGracefully())
+                    return true;
 
                 const CJSON Json(LReply->Content);
 
@@ -826,14 +832,11 @@ namespace Apostol {
                     const auto &provider = AConnection->Data()["provider"];
 
                     if (provider == "default") {
-
                         SetAuthorizationData(AConnection, Json);
                         // Set after call SetAuthorizationData()
                         const auto &Location = AConnection->Data()["redirect"];
                         Redirect(AConnection, Location, true);
-
                     } else {
-
                         SignInToken(AConnection, Json);
                     }
                 } else {
@@ -848,7 +851,7 @@ namespace Apostol {
                 return true;
             };
 
-            auto OnException = [this, AConnection](CTCPConnection *Sender, Delphi::Exception::Exception *AException) {
+            auto OnException = [AConnection](CTCPConnection *Sender, Delphi::Exception::Exception *AException) {
 
                 auto LConnection = dynamic_cast<CHTTPClientConnection *> (Sender);
                 auto LClient = dynamic_cast<CHTTPClient *> (LConnection->Client());
@@ -857,7 +860,8 @@ namespace Apostol {
 
                 const auto &redirectError = AConnection->Data()["redirect_error"];
 
-                RedirectError(AConnection, redirectError, 500, "server_error", AException->what());
+                if (!AConnection->ClosedGracefully())
+                    RedirectError(AConnection, redirectError, 500, "server_error", AException->what());
 
                 Log()->Error(APP_LOG_EMERG, 0, "[%s:%d] %s", LClient->Host().c_str(), LClient->Port(),
                              AException->what());
@@ -1025,30 +1029,36 @@ namespace Apostol {
 
                     CString TokenURI(Provider.TokenURI(Application));
 
-                    if (TokenURI.front() == '/') {
-                        TokenURI = LRequest->Location.Origin() + TokenURI;
+                    if (!TokenURI.IsEmpty()) {
+                        if (TokenURI.front() == '/') {
+                            TokenURI = LRequest->Location.Origin() + TokenURI;
+                        }
+
+                        CLocation URI(TokenURI);
+
+                        auto pClient = GetClient(URI.hostname, URI.port);
+
+                        AConnection->Data().Values("provider", providerName);
+                        AConnection->Data().Values("redirect", redirect_callback);
+                        AConnection->Data().Values("redirect_error", redirect_error);
+
+                        pClient->Data().Values("client_id", Provider.ClientId(Application));
+                        pClient->Data().Values("client_secret", Provider.Secret(Application));
+                        pClient->Data().Values("grant_type", "authorization_code");
+                        pClient->Data().Values("code", code);
+                        pClient->Data().Values("redirect_uri", LRequest->Location.Origin() + LRequest->Location.pathname);
+                        pClient->Data().Values("token_uri", URI.pathname);
+
+                        pClient->OnRequest(OnRequestToken);
+                        pClient->OnExecute(OnReplyToken);
+                        pClient->OnException(OnException);
+
+                        pClient->Active(true);
+                    } else {
+                        RedirectError(AConnection, redirect_error, 400, "invalid_request", "Parameter \"token_uri\" not found in provider configuration.");
                     }
-
-                    CLocation URI(TokenURI);
-
-                    auto LClient = GetClient(URI.hostname, URI.port);
-
-                    AConnection->Data().Values("provider", providerName);
-                    AConnection->Data().Values("redirect", redirect_callback);
-                    AConnection->Data().Values("redirect_error", redirect_error);
-
-                    LClient->Data().Values("client_id", Provider.ClientId(Application));
-                    LClient->Data().Values("client_secret", Provider.Secret(Application));
-                    LClient->Data().Values("grant_type", "authorization_code");
-                    LClient->Data().Values("code", code);
-                    LClient->Data().Values("redirect_uri", LRequest->Location.Origin() + LRequest->Location.pathname);
-                    LClient->Data().Values("token_uri", URI.pathname);
-
-                    LClient->OnRequest(OnRequestToken);
-                    LClient->OnExecute(OnReplyToken);
-                    LClient->OnException(OnException);
-
-                    LClient->Active(true);
+                } else {
+                    RedirectError(AConnection, redirect_error, 400, "invalid_request", "Parameter \"code\" not found.");
                 }
 
                 return;
@@ -1116,6 +1126,9 @@ namespace Apostol {
                 m_FixedDate = now + (CDateTime) 30 * 60 / SecsPerDay; // 30 min
                 LoadCerts();
             }
+
+            auto &LClientManager = m_pModuleProcess->ClientManager();
+            LClientManager.Shrink();
         }
         //--------------------------------------------------------------------------------------------------------------
 

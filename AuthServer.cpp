@@ -425,7 +425,7 @@ namespace Apostol {
 
         void CAuthServer::Identifier(CHTTPServerConnection *AConnection, const CString &Identifier) {
 
-            auto OnExecuted = [this, AConnection](CPQPollQuery *APollQuery) {
+            auto OnExecuted = [AConnection](CPQPollQuery *APollQuery) {
 
                 auto LReply = AConnection->Reply();
                 auto LResult = APollQuery->Results(0);
@@ -451,7 +451,7 @@ namespace Apostol {
                 AConnection->SendReply(LStatus, nullptr, true);
             };
 
-            auto OnException = [this, AConnection](CPQPollQuery *APollQuery, Delphi::Exception::Exception *AException) {
+            auto OnException = [AConnection](CPQPollQuery *APollQuery, Delphi::Exception::Exception *AException) {
 
                 auto LReply = AConnection->Reply();
 
@@ -521,7 +521,7 @@ namespace Apostol {
                 Redirect(AConnection, _T("/welcome/"),true);
             };
 
-            auto OnException = [this, AConnection](CPQPollQuery *APollQuery, Delphi::Exception::Exception *AException) {
+            auto OnException = [AConnection](CPQPollQuery *APollQuery, Delphi::Exception::Exception *AException) {
 
                 Log()->Error(APP_LOG_EMERG, 0, AException->what());
                 AConnection->SendStockReply(CReply::internal_server_error, true);
@@ -572,7 +572,7 @@ namespace Apostol {
 
         void CAuthServer::DoToken(CHTTPServerConnection *AConnection) {
 
-            auto OnExecuted = [AConnection, this](CPQPollQuery *APollQuery) {
+            auto OnExecuted = [AConnection](CPQPollQuery *APollQuery) {
 
                 auto LReply = AConnection->Reply();
                 auto LResult = APollQuery->Results(0);

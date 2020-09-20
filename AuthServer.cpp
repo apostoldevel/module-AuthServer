@@ -251,7 +251,7 @@ namespace Apostol {
         }
         //--------------------------------------------------------------------------------------------------------------
 
-        void CAuthServer::QueryException(CPQPollQuery *APollQuery, const std::exception &e) {
+        void CAuthServer::QueryException(CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
 
             auto LConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->PollConnection());
 
@@ -261,19 +261,19 @@ namespace Apostol {
                 const auto& LRedirect = LConnection->Data()["redirect_error"];
 
                 if (!LRedirect.IsEmpty()) {
-                    RedirectError(LConnection, LRedirect, CReply::internal_server_error, "server_error", e.what());
+                    RedirectError(LConnection, LRedirect, CReply::internal_server_error, "server_error", E.what());
                 } else {
-                    ExceptionToJson(CReply::internal_server_error, e, LReply->Content);
+                    ExceptionToJson(CReply::internal_server_error, E, LReply->Content);
                     LConnection->SendReply(CReply::ok, nullptr, true);
                 }
             }
 
-            Log()->Error(APP_LOG_EMERG, 0, e.what());
+            Log()->Error(APP_LOG_EMERG, 0, E.what());
         }
         //--------------------------------------------------------------------------------------------------------------
 
-        void CAuthServer::DoPostgresQueryException(CPQPollQuery *APollQuery, Delphi::Exception::Exception *AException) {
-            QueryException(APollQuery, *AException);
+        void CAuthServer::DoPostgresQueryException(CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
+            QueryException(APollQuery, E);
         }
         //--------------------------------------------------------------------------------------------------------------
 
@@ -451,15 +451,15 @@ namespace Apostol {
                 AConnection->SendReply(LStatus, nullptr, true);
             };
 
-            auto OnException = [AConnection](CPQPollQuery *APollQuery, Delphi::Exception::Exception *AException) {
+            auto OnException = [AConnection](CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
 
                 auto LReply = AConnection->Reply();
 
                 LReply->Content.Clear();
-                ExceptionToJson(CReply::internal_server_error, *AException, LReply->Content);
+                ExceptionToJson(CReply::internal_server_error, E, LReply->Content);
                 AConnection->SendStockReply(CReply::ok, true);
 
-                Log()->Error(APP_LOG_EMERG, 0, AException->what());
+                Log()->Error(APP_LOG_EMERG, 0, E.what());
 
             };
 
@@ -514,16 +514,16 @@ namespace Apostol {
                                 Log()->Error(APP_LOG_INFO, 0, ErrorMessage.c_str());
                         }
                     }
-                } catch (std::exception &e) {
-                    Log()->Error(APP_LOG_EMERG, 0, e.what());
+                } catch (Delphi::Exception::Exception &E) {
+                    Log()->Error(APP_LOG_EMERG, 0, E.what());
                 }
 
                 Redirect(AConnection, _T("/welcome/"),true);
             };
 
-            auto OnException = [AConnection](CPQPollQuery *APollQuery, Delphi::Exception::Exception *AException) {
+            auto OnException = [AConnection](CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
 
-                Log()->Error(APP_LOG_EMERG, 0, AException->what());
+                Log()->Error(APP_LOG_EMERG, 0, E.what());
                 AConnection->SendStockReply(CReply::internal_server_error, true);
 
             };
@@ -602,9 +602,9 @@ namespace Apostol {
                 }
             };
 
-            auto OnException = [AConnection, this](CPQPollQuery *APollQuery, Delphi::Exception::Exception *AException) {
-                ReplyError(AConnection, 500, "server_error", *AException->what());
-                Log()->Error(APP_LOG_EMERG, 0, AException->what());
+            auto OnException = [AConnection, this](CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
+                ReplyError(AConnection, 500, "server_error", *E.what());
+                Log()->Error(APP_LOG_EMERG, 0, E.what());
             };
 
             auto LRequest = AConnection->Request();
@@ -715,12 +715,12 @@ namespace Apostol {
                     RedirectError(AConnection, errorLocation, 401, "invalid_token", e.what());
                 } catch (CAuthorizationError &e) {
                     RedirectError(AConnection, errorLocation, 401, "unauthorized_client", e.what());
-                } catch (std::exception &e) {
-                    RedirectError(AConnection, errorLocation, 400, "invalid_request", e.what());
+                } catch (Delphi::Exception::Exception &E) {
+                    RedirectError(AConnection, errorLocation, 400, "invalid_request", E.what());
                 }
-            } catch (Delphi::Exception::Exception &e) {
-                RedirectError(AConnection, errorLocation, 500, "server_error", e.what());
-                Log()->Error(APP_LOG_INFO, 0, "[Token] Message: %s", e.what());
+            } catch (Delphi::Exception::Exception &E) {
+                RedirectError(AConnection, errorLocation, 500, "server_error", E.what());
+                Log()->Error(APP_LOG_INFO, 0, "[Token] Message: %s", E.what());
             }
         }
         //--------------------------------------------------------------------------------------------------------------
@@ -851,7 +851,7 @@ namespace Apostol {
                 return true;
             };
 
-            auto OnException = [AConnection](CTCPConnection *Sender, Delphi::Exception::Exception *AException) {
+            auto OnException = [AConnection](CTCPConnection *Sender, const Delphi::Exception::Exception &E) {
 
                 auto LConnection = dynamic_cast<CHTTPClientConnection *> (Sender);
                 auto LClient = dynamic_cast<CHTTPClient *> (LConnection->Client());
@@ -861,10 +861,10 @@ namespace Apostol {
                 const auto &redirectError = AConnection->Data()["redirect_error"];
 
                 if (!AConnection->ClosedGracefully())
-                    RedirectError(AConnection, redirectError, 500, "server_error", AException->what());
+                    RedirectError(AConnection, redirectError, 500, "server_error", E.what());
 
                 Log()->Error(APP_LOG_EMERG, 0, "[%s:%d] %s", LClient->Host().c_str(), LClient->Port(),
-                             AException->what());
+                             E.what());
             };
 
             auto SetSearch = [](const CStringList &Search, CString &Location) {
@@ -1113,8 +1113,8 @@ namespace Apostol {
                 } else {
                     ReplyError(AConnection, 404, "invalid_request", "Not found.");
                 }
-            } catch (std::exception &e) {
-                ReplyError(AConnection, 400, "invalid_request", e.what());
+            } catch (Delphi::Exception::Exception &E) {
+                ReplyError(AConnection, 400, "invalid_request", E.what());
             }
         }
         //--------------------------------------------------------------------------------------------------------------
@@ -1139,8 +1139,7 @@ namespace Apostol {
         }
         //--------------------------------------------------------------------------------------------------------------
 
-        bool CAuthServer::CheckConnection(CHTTPServerConnection *AConnection) {
-            const auto& Location = AConnection->Request()->Location;
+        bool CAuthServer::CheckLocation(const CLocation &Location) {
             return Location.pathname.SubString(0, 8) == _T("/oauth2/");
         }
         //--------------------------------------------------------------------------------------------------------------

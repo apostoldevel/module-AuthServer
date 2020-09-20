@@ -48,7 +48,7 @@ namespace Apostol {
 
             static void AfterQuery(CHTTPServerConnection *AConnection, const CString &Path, const CJSON &Payload);
 
-            static void QueryException(CPQPollQuery *APollQuery, const std::exception &e);
+            static void QueryException(CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E);
 
             CString CreateToken(const CCleanToken& CleanToken);
             CString VerifyToken(const CString &Token);
@@ -74,7 +74,7 @@ namespace Apostol {
             void DoToken(CHTTPServerConnection *AConnection);
 
             void DoPostgresQueryExecuted(CPQPollQuery *APollQuery) override;
-            void DoPostgresQueryException(CPQPollQuery *APollQuery, Delphi::Exception::Exception *AException) override;
+            void DoPostgresQueryException(CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) override;
 
         public:
 
@@ -93,7 +93,8 @@ namespace Apostol {
             void Heartbeat() override;
 
             bool Enabled() override;
-            bool CheckConnection(CHTTPServerConnection *AConnection) override;
+
+            bool CheckLocation(const CLocation &Location) override;
 
         };
     }

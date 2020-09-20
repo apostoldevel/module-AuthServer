@@ -58,7 +58,7 @@ namespace Apostol {
             static int CheckOAuth2Error(const CJSON &Json, CString &Error, CString &ErrorDescription);
             static int CheckError(const CJSON &Json, CString &ErrorMessage, bool RaiseIfError = false);
 
-            static CReply::CStatusType ErrorCodeToStatus(int ErrorCode);
+            static CHTTPReply::CStatusType ErrorCodeToStatus(int ErrorCode);
 
             static void RedirectError(CHTTPServerConnection *AConnection, const CString &Location, int ErrorCode, const CString &Error, const CString &Message);
             static void ReplyError(CHTTPServerConnection *AConnection, int ErrorCode, const CString &Error, const CString &Message);

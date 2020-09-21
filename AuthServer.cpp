@@ -628,9 +628,10 @@ namespace Apostol {
 
                 if (client_id.IsEmpty()) {
                     const auto &Provider = Providers.Default().Value();
-
                     Authorization.Username = Provider.ClientId("web");
-                    Authorization.Password = Provider.Secret("web");
+                    const auto &RedirectURI = Provider.RedirectURI("web");
+                    if (RedirectURI.IndexOfName(redirect_uri) != -1)
+                        Authorization.Password = Provider.Secret("web");
                 } else {
                     Authorization.Username = client_id;
 
@@ -639,7 +640,9 @@ namespace Apostol {
                         const auto Index = OAuth2::Helper::ProviderByClientId(Providers, client_id, Application);
                         if (Index != -1) {
                             const auto &Provider = Providers[Index].Value();
-                            Authorization.Password = Provider.Secret(Application);
+                            const auto &RedirectURI = Provider.RedirectURI(Application);
+                            if (RedirectURI.IndexOfName(redirect_uri) != -1)
+                                Authorization.Password = Provider.Secret(Application);
                         }
                     } else {
                         Authorization.Password = client_secret;

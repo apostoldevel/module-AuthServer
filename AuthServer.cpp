@@ -737,6 +737,8 @@ namespace Apostol {
                     RedirectError(AConnection, errorLocation, 401, "unauthorized_client", e.what());
                 } catch (Delphi::Exception::Exception &E) {
                     RedirectError(AConnection, errorLocation, 400, "invalid_request", E.what());
+                } catch (std::exception &e) {
+                    RedirectError(AConnection, errorLocation, 400, "invalid_token", e.what());
                 }
             } catch (Delphi::Exception::Exception &E) {
                 RedirectError(AConnection, errorLocation, 500, "server_error", E.what());

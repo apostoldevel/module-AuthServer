@@ -280,13 +280,13 @@ namespace Apostol {
         CString CAuthServer::CreateToken(const CCleanToken& CleanToken) {
             const auto& Providers = Server().Providers();
             const auto& Default = Providers.Default().Value();
-
+            const CString Application("web");
             auto token = jwt::create()
-                    .set_issuer(Default.Issuer("web"))
-                    .set_audience(Default.ClientId("web"))
+                    .set_issuer(Default.Issuer(Application))
+                    .set_audience(Default.ClientId(Application))
                     .set_issued_at(std::chrono::system_clock::now())
                     .set_expires_at(std::chrono::system_clock::now() + std::chrono::seconds{3600})
-                    .sign(jwt::algorithm::hs256{std::string(Default.Secret("web"))});
+                    .sign(jwt::algorithm::hs256{std::string(Default.Secret(Application))});
 
             return token;
         }
@@ -607,6 +607,10 @@ namespace Apostol {
                 Log()->Error(APP_LOG_EMERG, 0, E.what());
             };
 
+            LPCTSTR js_origin_error = _T("The JavaScript origin in the request, %s, does not match the ones authorized for the OAuth client.");
+            LPCTSTR redirect_error = _T("Invalid parameter value for redirect_uri: Non-public domains not allowed: %s");
+            LPCTSTR value_error = _T("Parameter value %s cannot be empty.");
+
             auto LRequest = AConnection->Request();
             auto LReply = AConnection->Reply();
 
@@ -618,6 +622,9 @@ namespace Apostol {
             const auto &grant_type = Json["grant_type"].AsString();
             const auto &redirect_uri = Json["redirect_uri"].AsString();
 
+            CString Application("web");
+            const auto &Origin = GetOrigin(AConnection);
+
             CAuthorization Authorization;
             const auto &LAuthorization = LRequest->Headers.Values(_T("Authorization"));
 
@@ -628,25 +635,32 @@ namespace Apostol {
 
                 if (client_id.IsEmpty()) {
                     const auto &Provider = Providers.Default().Value();
-                    Authorization.Username = Provider.ClientId("web");
-                    const auto &RedirectURI = Provider.RedirectURI("web");
-                    if (RedirectURI.IndexOfName(redirect_uri) != -1)
-                        Authorization.Password = Provider.Secret("web");
+                    Authorization.Username = Provider.ClientId(Application);
                 } else {
                     Authorization.Username = client_id;
+                }
 
-                    if (client_secret.IsEmpty()) {
-                        CString Application;
-                        const auto Index = OAuth2::Helper::ProviderByClientId(Providers, client_id, Application);
-                        if (Index != -1) {
-                            const auto &Provider = Providers[Index].Value();
-                            const auto &RedirectURI = Provider.RedirectURI(Application);
-                            if (RedirectURI.IndexOfName(redirect_uri) != -1)
-                                Authorization.Password = Provider.Secret(Application);
+                if (client_secret.IsEmpty()) {
+                    const auto Index = OAuth2::Helper::ProviderByClientId(Providers, client_id, Application);
+                    if (Index != -1) {
+                        const auto &Provider = Providers[Index].Value();
+                        if (Application == "web") {
+                            if (!redirect_uri.IsEmpty()) {
+                                const auto &RedirectURI = Provider.RedirectURI(Application);
+                                if (RedirectURI.IndexOfName(redirect_uri) == -1)
+                                    ReplyError(AConnection, 400, "invalid_request",
+                                               CString().Format(redirect_error, redirect_uri.c_str()));
+                            } else {
+                                const auto &JavaScriptOrigins = Provider.JavaScriptOrigins(Application);
+                                if (JavaScriptOrigins.IndexOfName(Origin) == -1)
+                                    ReplyError(AConnection, 400, "invalid_request",
+                                               CString().Format(js_origin_error, Origin.c_str()));
+                            }
+                            Authorization.Password = Provider.Secret(Application);
                         }
-                    } else {
-                        Authorization.Password = client_secret;
                     }
+                } else {
+                    Authorization.Password = client_secret;
                 }
             } else {
                 Authorization << LAuthorization;
@@ -656,6 +670,9 @@ namespace Apostol {
                     return;
                 }
             }
+
+            if (Authorization.Password.IsEmpty())
+                ReplyError(AConnection, 400, "invalid_request", CString().Format(value_error, "client_secret"));
 
             const auto &Agent = GetUserAgent(AConnection);
             const auto &Host = GetHost(AConnection);

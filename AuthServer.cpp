@@ -405,24 +405,6 @@ namespace Apostol {
         }
         //--------------------------------------------------------------------------------------------------------------
 
-        void CAuthServer::LoadCerts() {
-            const CString pathCerts = Config()->Prefix() + _T("certs/");
-            const CString lockFile = pathCerts + "lock";
-            if (!FileExists(lockFile.c_str())) {
-                auto& Providers = Server().Providers();
-                for (int i = 0; i < Providers.Count(); i++) {
-                    auto &Provider = Providers[i].Value();
-                    if (FileExists(CString(pathCerts + Provider.Name).c_str())) {
-                        Provider.Keys.Clear();
-                        Provider.Keys.LoadFromFile(CString(pathCerts + Provider.Name).c_str());
-                    }
-                }
-            } else {
-                m_FixedDate = Now() + (CDateTime) 1 / SecsPerDay; // 1 sec
-            }
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
         void CAuthServer::Identifier(CHTTPServerConnection *AConnection, const CString &Identifier) {
 
             auto OnExecuted = [AConnection](CPQPollQuery *APollQuery) {
@@ -1139,16 +1121,102 @@ namespace Apostol {
         }
         //--------------------------------------------------------------------------------------------------------------
 
+        void CAuthServer::FetchCerts(CProvider &Provider) {
+
+            const auto& URI = Provider.CertURI("web");
+
+            if (URI.IsEmpty()) {
+                Log()->Error(APP_LOG_INFO, 0, _T("Certificate URI in provider \"%s\" is empty."), Provider.Name.c_str());
+                return;
+            }
+
+            Log()->Error(APP_LOG_INFO, 0, _T("Trying to fetch public keys from: %s"), URI.c_str());
+
+            auto OnRequest = [&Provider](CHTTPClient *Sender, CHTTPRequest *Request) {
+                Provider.KeyStatusTime = Now();
+                Provider.KeyStatus = CProvider::ksFetching;
+                CLocation Location(Provider.CertURI("web"));
+                CHTTPRequest::Prepare(Request, "GET", Location.pathname.c_str());
+            };
+
+            auto OnExecute = [&Provider](CTCPConnection *AConnection) {
+                auto LConnection = dynamic_cast<CHTTPClientConnection *> (AConnection);
+                auto LReply = LConnection->Reply();
+
+                try {
+                    DebugRequest(LConnection->Request());
+                    DebugReply(LReply);
+
+                    Provider.KeyStatusTime = Now();
+
+                    Provider.Keys.Clear();
+                    Provider.Keys << LReply->Content;
+
+                    Provider.KeyStatus = CProvider::ksSuccess;
+                } catch (Delphi::Exception::Exception &E) {
+                    Provider.KeyStatus = CProvider::ksFailed;
+                    Log()->Error(APP_LOG_EMERG, 0, "[Certificate] Message: %s", E.what());
+                }
+
+                LConnection->CloseConnection(true);
+                return true;
+            };
+
+            auto OnException = [&Provider](CTCPConnection *AConnection, const Delphi::Exception::Exception &E) {
+                auto LConnection = dynamic_cast<CHTTPClientConnection *> (AConnection);
+                auto LClient = dynamic_cast<CHTTPClient *> (LConnection->Client());
+
+                Provider.KeyStatusTime = Now();
+                Provider.KeyStatus = CProvider::ksFailed;
+
+                Log()->Error(APP_LOG_EMERG, 0, "[%s:%d] %s", LClient->Host().c_str(), LClient->Port(), E.what());
+            };
+
+            CLocation Location(URI);
+            auto LClient = GetClient(Location.hostname, Location.port);
+
+            LClient->OnRequest(OnRequest);
+            LClient->OnExecute(OnExecute);
+            LClient->OnException(OnException);
+
+            LClient->Active(true);
+        }
+        //--------------------------------------------------------------------------------------------------------------
+
+        void CAuthServer::FetchProviders() {
+            auto& Providers = Server().Providers();
+            for (int i = 0; i < Providers.Count(); i++) {
+                auto& Provider = Providers[i].Value();
+                if (Provider.KeyStatus == CProvider::ksUnknown) {
+                    FetchCerts(Provider);
+                }
+            }
+        }
+        //--------------------------------------------------------------------------------------------------------------
+
+        void CAuthServer::CheckProviders() {
+            auto& Providers = Server().Providers();
+            for (int i = 0; i < Providers.Count(); i++) {
+                auto& Provider = Providers[i].Value();
+                if (Provider.KeyStatus != CProvider::ksUnknown) {
+                    Provider.KeyStatusTime = Now();
+                    Provider.KeyStatus = CProvider::ksUnknown;
+                }
+            }
+        }
+        //--------------------------------------------------------------------------------------------------------------
+
         void CAuthServer::Heartbeat() {
             auto now = Now();
 
             if ((now >= m_FixedDate)) {
-                m_FixedDate = now + (CDateTime) 30 * 60 / SecsPerDay; // 30 min
-                LoadCerts();
+                m_FixedDate = now + (CDateTime) 15 * 60 / SecsPerDay; // 15 min
+
+                CheckProviders();
+                FetchProviders();
             }
 
-            auto &LClientManager = m_pModuleProcess->ClientManager();
-            LClientManager.CleanUp();
+            m_pModuleProcess->ClientManager().CleanUp();
         }
         //--------------------------------------------------------------------------------------------------------------
 

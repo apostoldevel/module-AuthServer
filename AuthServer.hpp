@@ -44,7 +44,10 @@ namespace Apostol {
 
             void InitMethods() override;
 
-            void LoadCerts();
+            void FetchCerts(CProvider &Provider);
+
+            void FetchProviders();
+            void CheckProviders();
 
             static void AfterQuery(CHTTPServerConnection *AConnection, const CString &Path, const CJSON &Payload);
 

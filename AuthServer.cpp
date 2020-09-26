@@ -130,6 +130,9 @@ namespace Apostol {
 
                 if (ErrorCode >= 10000)
                     ErrorCode = ErrorCode / 100;
+
+                if (ErrorCode < 0)
+                    ErrorCode = 400;
             }
 
             return ErrorCode;
@@ -173,7 +176,6 @@ namespace Apostol {
         //--------------------------------------------------------------------------------------------------------------
 
         void CAuthServer::DoPostgresQueryExecuted(CPQPollQuery *APollQuery) {
-            clock_t start = clock();
 
             auto LResult = APollQuery->Results(0);
 
@@ -246,8 +248,6 @@ namespace Apostol {
                     }
                 }
             }
-
-            log_debug1(APP_LOG_DEBUG_CORE, Log(), 0, _T("Query executed runtime: %.2f ms."), (double) ((clock() - start) / (double) CLOCKS_PER_SEC * 1000));
         }
         //--------------------------------------------------------------------------------------------------------------
 
@@ -449,76 +449,9 @@ namespace Apostol {
 
             SQL.Add(CString().Format("SELECT * FROM daemon.identifier(%s);", PQQuoteLiteral(Identifier).c_str()));
 
-            if (!ExecSQL(SQL, AConnection, OnExecuted, OnException)) {
-                AConnection->SendStockReply(CHTTPReply::service_unavailable);
-            }
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::Authorize(CHTTPServerConnection *AConnection, const CString &Session, const CString &Path,
-                                    const CString &Resource) {
-
-            auto OnExecuted = [this, AConnection](CPQPollQuery *APollQuery) {
-
-                auto LReply = AConnection->Reply();
-
-                const auto& LSession = AConnection->Data()["session"];
-                const auto& LPath = AConnection->Data()["path"];
-                const auto& LResource = AConnection->Data()["resource"];
-
-                CPQResult *Result;
-                CStringList SQL;
-
-                try {
-                    for (int I = 0; I < APollQuery->Count(); I++) {
-                        Result = APollQuery->Results(I);
-
-                        if (Result->ExecStatus() != PGRES_TUPLES_OK)
-                            throw Delphi::Exception::EDBError(Result->GetErrorMessage());
-
-                        CString ErrorMessage;
-
-                        const CJSON Payload(Result->GetValue(0, 0));
-                        if (CheckError(Payload, ErrorMessage) == 0) {
-                            if (LPath == _T("/")) {
-                                AConnection->Data().Values("redirect", "/dashboard/");
-                                SetAuthorizationData(AConnection, Payload);
-                                Redirect(AConnection, AConnection->Data()["redirect"], true);
-                            } else {
-                                SendResource(AConnection, LResource, _T("text/html"), true);
-                            }
-
-                            return;
-                        } else {
-                            LReply->SetCookie(_T("SID"), _T("null"), _T("/"), -1);
-
-                            if (!ErrorMessage.IsEmpty())
-                                Log()->Error(APP_LOG_INFO, 0, ErrorMessage.c_str());
-                        }
-                    }
-                } catch (Delphi::Exception::Exception &E) {
-                    Log()->Error(APP_LOG_EMERG, 0, E.what());
-                }
-
-                Redirect(AConnection, _T("/welcome/"),true);
-            };
-
-            auto OnException = [AConnection](CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
-
-                Log()->Error(APP_LOG_EMERG, 0, E.what());
-                AConnection->SendStockReply(CHTTPReply::internal_server_error, true);
-
-            };
-
-            CStringList SQL;
-
-            SQL.Add(CString().Format("SELECT * FROM daemon.authorize('%s');", Session.c_str()));
-
-            AConnection->Data().Values("session", Session);
-            AConnection->Data().Values("path", Path);
-            AConnection->Data().Values("resource", Resource);
-
-            if (!ExecSQL(SQL, nullptr, OnExecuted, OnException)) {
+            try {
+                ExecSQL(SQL, nullptr, OnExecuted, OnException);
+            } catch (Delphi::Exception::Exception &E) {
                 AConnection->SendStockReply(CHTTPReply::service_unavailable);
             }
         }
@@ -532,6 +465,8 @@ namespace Apostol {
             ErrorLocation << "&error_description=" << CHTTPServer::URLEncode(Message);
 
             Redirect(AConnection, ErrorLocation, true);
+
+            Log()->Error(APP_LOG_EMERG, 0, _T("RedirectError: %s"), Message.c_str());
         }
         //--------------------------------------------------------------------------------------------------------------
 
@@ -549,6 +484,8 @@ namespace Apostol {
                                    Error.c_str(), Delphi::Json::EncodeJsonString(Message).c_str());
 
             AConnection->SendReply(Status, nullptr, true);
+
+            Log()->Error(APP_LOG_EMERG, 0, _T("ReplyError: %s"), Message.c_str());
         };
         //--------------------------------------------------------------------------------------------------------------
 
@@ -580,13 +517,11 @@ namespace Apostol {
                     }
                 } catch (Delphi::Exception::Exception &E) {
                     ReplyError(AConnection, 500, "server_error", E.what());
-                    Log()->Error(APP_LOG_EMERG, 0, E.what());
                 }
             };
 
-            auto OnException = [AConnection, this](CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
-                ReplyError(AConnection, 500, "server_error", *E.what());
-                Log()->Error(APP_LOG_EMERG, 0, E.what());
+            auto OnException = [AConnection](CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
+                ReplyError(AConnection, 500, "server_error", E.what());
             };
 
             LPCTSTR js_origin_error = _T("The JavaScript origin in the request, %s, does not match the ones authorized for the OAuth client.");
@@ -669,7 +604,9 @@ namespace Apostol {
                                      PQQuoteLiteral(Host).c_str()
             ));
 
-            if (!ExecSQL(SQL, AConnection, OnExecuted, OnException)) {
+            try {
+                ExecSQL(SQL, AConnection, OnExecuted, OnException);
+            } catch (Delphi::Exception::Exception &E) {
                 ReplyError(AConnection, 400, "temporarily_unavailable", "Temporarily unavailable.");
             }
         }
@@ -707,10 +644,11 @@ namespace Apostol {
                     AConnection->Data().Values("signature", "false");
                     AConnection->Data().Values("path", "/sign/in/token");
 
-                    if (!ExecSQL(SQL, AConnection)) {
-                        RedirectError(AConnection, errorLocation, 400, "temporarily_unavailable", "Temporarily unavailable.");
+                    try {
+                        ExecSQL(SQL, AConnection);
+                    } catch (Delphi::Exception::Exception &E) {
+                        RedirectError(AConnection, errorLocation, CHTTPReply::service_unavailable, "temporarily_unavailable", "Temporarily unavailable.");
                     }
-
                 } catch (jwt::token_expired_exception &e) {
                     RedirectError(AConnection, errorLocation, 403, "invalid_token", e.what());
                 } catch (jwt::token_verification_exception &e) {

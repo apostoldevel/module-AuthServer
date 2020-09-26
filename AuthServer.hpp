@@ -91,8 +91,6 @@ namespace Apostol {
 
             void Identifier(CHTTPServerConnection *AConnection, const CString &Identifier);
 
-            void Authorize(CHTTPServerConnection *AConnection, const CString &Session, const CString &Path, const CString &Resource);
-
             void Heartbeat() override;
 
             bool Enabled() override;

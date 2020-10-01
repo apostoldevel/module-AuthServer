@@ -512,6 +512,8 @@ namespace Apostol {
         void CAuthServer::ReplyError(CHTTPServerConnection *AConnection, int ErrorCode, const CString &Error, const CString &Message) {
             auto LReply = AConnection->Reply();
 
+            LReply->ContentType = CHTTPReply::json;
+
             CHTTPReply::CStatusType Status = ErrorCodeToStatus(ErrorCode);
 
             if (ErrorCode == CHTTPReply::unauthorized) {

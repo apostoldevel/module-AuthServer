@@ -42,9 +42,10 @@ namespace Apostol {
 
         //--------------------------------------------------------------------------------------------------------------
 
-        CAuthServer::CAuthServer(CModuleProcess *AProcess) : CApostolModule(AProcess, "authorization server") {
-            m_Headers.Add("Authorization");
+        CAuthServer::CAuthServer(CModuleProcess *AProcess) : CApostolModule(AProcess,
+                "authorization server", "worker/AuthServer") {
 
+            m_Headers.Add("Authorization");
             m_FixedDate = Now();
 
             CAuthServer::InitMethods();
@@ -405,7 +406,37 @@ namespace Apostol {
         }
         //--------------------------------------------------------------------------------------------------------------
 
-        void CAuthServer::Identifier(CHTTPServerConnection *AConnection, const CString &Identifier) {
+        bool CAuthServer::CheckAuthorization(CHTTPServerConnection *AConnection, CAuthorization &Authorization) {
+
+            auto LRequest = AConnection->Request();
+
+            try {
+                if (CheckAuthorizationData(LRequest, Authorization)) {
+                    if (Authorization.Schema == CAuthorization::asBearer) {
+                        VerifyToken(Authorization.Token);
+                        return true;
+                    }
+                }
+
+                if (Authorization.Schema == CAuthorization::asBasic)
+                    AConnection->Data().Values("Authorization", "Basic");
+
+                ReplyError(AConnection, CHTTPReply::unauthorized, "unauthorized", "Unauthorized.");
+            } catch (jwt::token_expired_exception &e) {
+                ReplyError(AConnection, CHTTPReply::forbidden, "forbidden", e.what());
+            } catch (jwt::token_verification_exception &e) {
+                ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request", e.what());
+            } catch (CAuthorizationError &e) {
+                ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request", e.what());
+            } catch (std::exception &e) {
+                ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request", e.what());
+            }
+
+            return false;
+        }
+        //--------------------------------------------------------------------------------------------------------------
+
+        void CAuthServer::DoIdentifier(CHTTPServerConnection *AConnection) {
 
             auto OnExecuted = [AConnection](CPQPollQuery *APollQuery) {
 
@@ -434,16 +465,24 @@ namespace Apostol {
             };
 
             auto OnException = [AConnection](CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
-
-                auto LReply = AConnection->Reply();
-
-                LReply->Content.Clear();
-                ExceptionToJson(CHTTPReply::internal_server_error, E, LReply->Content);
-                AConnection->SendStockReply(CHTTPReply::ok, true);
-
-                Log()->Error(APP_LOG_EMERG, 0, E.what());
-
+                ReplyError(AConnection, CHTTPReply::internal_server_error, "server_error", E.what());
             };
+
+            auto LRequest = AConnection->Request();
+
+            CJSON Json;
+            ContentToJson(LRequest, Json);
+
+            const auto &Identifier = Json["value"].AsString();
+
+            if (Identifier.IsEmpty()) {
+                ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request", "Invalid request.");
+                return;
+            }
+
+            CAuthorization LAuthorization;
+            if (!CheckAuthorization(AConnection, LAuthorization))
+                return;
 
             CStringList SQL;
 
@@ -452,7 +491,7 @@ namespace Apostol {
             try {
                 ExecSQL(SQL, nullptr, OnExecuted, OnException);
             } catch (Delphi::Exception::Exception &E) {
-                AConnection->SendStockReply(CHTTPReply::service_unavailable);
+                ReplyError(AConnection, CHTTPReply::service_unavailable, "temporarily_unavailable", "Temporarily unavailable.");
             }
         }
         //--------------------------------------------------------------------------------------------------------------
@@ -516,12 +555,12 @@ namespace Apostol {
                         ReplyError(AConnection, LStatus, Error, ErrorDescription);
                     }
                 } catch (Delphi::Exception::Exception &E) {
-                    ReplyError(AConnection, 500, "server_error", E.what());
+                    ReplyError(AConnection, CHTTPReply::internal_server_error, "server_error", E.what());
                 }
             };
 
             auto OnException = [AConnection](CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
-                ReplyError(AConnection, 500, "server_error", E.what());
+                ReplyError(AConnection, CHTTPReply::internal_server_error, "server_error", E.what());
             };
 
             LPCTSTR js_origin_error = _T("The JavaScript origin in the request, %s, does not match the ones authorized for the OAuth client.");
@@ -565,12 +604,12 @@ namespace Apostol {
                             if (!redirect_uri.IsEmpty()) {
                                 const auto &RedirectURI = Provider.RedirectURI(Application);
                                 if (RedirectURI.IndexOfName(redirect_uri) == -1)
-                                    ReplyError(AConnection, 400, "invalid_request",
+                                    ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
                                                CString().Format(redirect_error, redirect_uri.c_str()));
                             } else {
                                 const auto &JavaScriptOrigins = Provider.JavaScriptOrigins(Application);
                                 if (JavaScriptOrigins.IndexOfName(Origin) == -1)
-                                    ReplyError(AConnection, 400, "invalid_request",
+                                    ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
                                                CString().Format(js_origin_error, Origin.c_str()));
                             }
                             Authorization.Password = Provider.Secret(Application);
@@ -583,13 +622,13 @@ namespace Apostol {
                 Authorization << LAuthorization;
 
                 if (Authorization.Schema != CAuthorization::asBasic) {
-                    ReplyError(AConnection, 400, "invalid_request", "Invalid authorization schema.");
+                    ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request", "Invalid authorization schema.");
                     return;
                 }
             }
 
             if (Authorization.Password.IsEmpty())
-                ReplyError(AConnection, 400, "invalid_request", CString().Format(value_error, "client_secret"));
+                ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request", CString().Format(value_error, "client_secret"));
 
             const auto &Agent = GetUserAgent(AConnection);
             const auto &Host = GetHost(AConnection);
@@ -607,7 +646,7 @@ namespace Apostol {
             try {
                 ExecSQL(SQL, AConnection, OnExecuted, OnException);
             } catch (Delphi::Exception::Exception &E) {
-                ReplyError(AConnection, 400, "temporarily_unavailable", "Temporarily unavailable.");
+                ReplyError(AConnection, CHTTPReply::bad_request, "temporarily_unavailable", "Temporarily unavailable.");
             }
         }
         //--------------------------------------------------------------------------------------------------------------
@@ -650,16 +689,16 @@ namespace Apostol {
                         RedirectError(AConnection, errorLocation, CHTTPReply::service_unavailable, "temporarily_unavailable", "Temporarily unavailable.");
                     }
                 } catch (jwt::token_expired_exception &e) {
-                    RedirectError(AConnection, errorLocation, 403, "invalid_token", e.what());
+                    RedirectError(AConnection, errorLocation, CHTTPReply::forbidden, "invalid_token", e.what());
                 } catch (jwt::token_verification_exception &e) {
-                    RedirectError(AConnection, errorLocation, 401, "invalid_token", e.what());
+                    RedirectError(AConnection, errorLocation, CHTTPReply::unauthorized, "invalid_token", e.what());
                 } catch (CAuthorizationError &e) {
-                    RedirectError(AConnection, errorLocation, 401, "unauthorized_client", e.what());
+                    RedirectError(AConnection, errorLocation, CHTTPReply::unauthorized, "unauthorized_client", e.what());
                 } catch (std::exception &e) {
-                    RedirectError(AConnection, errorLocation, 400, "invalid_token", e.what());
+                    RedirectError(AConnection, errorLocation, CHTTPReply::bad_request, "invalid_token", e.what());
                 }
             } catch (Delphi::Exception::Exception &E) {
-                RedirectError(AConnection, errorLocation, 500, "server_error", E.what());
+                RedirectError(AConnection, errorLocation, CHTTPReply::internal_server_error, "server_error", E.what());
                 Log()->Error(APP_LOG_INFO, 0, "[Token] Message: %s", E.what());
             }
         }
@@ -696,6 +735,35 @@ namespace Apostol {
 
                 AConnection->Data().Values("redirect", Redirect);
             }
+        }
+        //--------------------------------------------------------------------------------------------------------------
+
+        bool CAuthServer::CheckAuthorizationData(CHTTPRequest *ARequest, CAuthorization &Authorization) {
+
+            const auto &LHeaders = ARequest->Headers;
+            const auto &LCookies = ARequest->Cookies;
+
+            const auto &LAuthorization = LHeaders.Values(_T("Authorization"));
+
+            if (LAuthorization.IsEmpty()) {
+
+                const auto &headerSession = LHeaders.Values(_T("Session"));
+                const auto &headerSecret = LHeaders.Values(_T("Secret"));
+
+                Authorization.Username = headerSession;
+                Authorization.Password = headerSecret;
+
+                if (Authorization.Username.IsEmpty() || Authorization.Password.IsEmpty())
+                    return false;
+
+                Authorization.Schema = CAuthorization::asBasic;
+                Authorization.Type = CAuthorization::atSession;
+
+            } else {
+                Authorization << LAuthorization;
+            }
+
+            return true;
         }
         //--------------------------------------------------------------------------------------------------------------
 
@@ -801,7 +869,7 @@ namespace Apostol {
                 const auto &redirectError = AConnection->Data()["redirect_error"];
 
                 if (!AConnection->ClosedGracefully())
-                    RedirectError(AConnection, redirectError, 500, "server_error", E.what());
+                    RedirectError(AConnection, redirectError, CHTTPReply::internal_server_error, "server_error", E.what());
 
                 Log()->Error(APP_LOG_EMERG, 0, "[%s:%d] %s", LClient->Host().c_str(), LClient->Port(),
                              E.what());
@@ -872,7 +940,7 @@ namespace Apostol {
                 const auto &prompt = LRequest->Params["prompt"];
 
                 if (redirect_uri.IsEmpty()) {
-                    RedirectError(AConnection, redirect_error, 400, "invalid_request",
+                    RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request",
                                   CString().Format("Parameter value redirect_uri cannot be empty."));
                     return;
                 }
@@ -881,12 +949,12 @@ namespace Apostol {
                 const auto &Application = Provider.GetClients()[client_id];
 
                 if (Application.IsEmpty()) {
-                    RedirectError(AConnection, redirect_error, 401, "invalid_client", CString().Format("The OAuth client was not found."));
+                    RedirectError(AConnection, redirect_error, CHTTPReply::unauthorized, "invalid_client", CString().Format("The OAuth client was not found."));
                     return;
                 }
 
                 if (Provider.RedirectURI(Application).IndexOfName(redirect_uri) == -1) {
-                    RedirectError(AConnection, redirect_error, 400, "invalid_request",
+                    RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request",
                                   CString().Format("Invalid parameter value for redirect_uri: Non-public domains not allowed: %s", redirect_uri.c_str()));
                     return;
                 }
@@ -894,7 +962,7 @@ namespace Apostol {
                 ParseString(response_type, ResponseType, Valid, Invalid);
 
                 if (Invalid.Count() > 0) {
-                    RedirectError(AConnection, redirect_error, 400, "unsupported_response_type",
+                    RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "unsupported_response_type",
                                   CString().Format("Some requested response type were invalid: {valid=[%s], invalid=[%s]}",
                                                    Valid.Text().c_str(), Invalid.Text().c_str()));
                     return;
@@ -904,7 +972,7 @@ namespace Apostol {
                     AccessType.Clear();
 
                 if (!access_type.IsEmpty() && AccessType.IndexOfName(access_type) == -1) {
-                    RedirectError(AConnection, redirect_error, 400, "invalid_request",
+                    RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request",
                                   CString().Format("Invalid access_type: %s", access_type.c_str()));
                     return;
                 }
@@ -913,7 +981,7 @@ namespace Apostol {
                 ParseString(scope, Scopes, Valid, Invalid);
 
                 if (Invalid.Count() > 0) {
-                    RedirectError(AConnection, redirect_error, 400, "invalid_scope",
+                    RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_scope",
                                   CString().Format("Some requested scopes were invalid: {valid=[%s], invalid=[%s]}",
                                                    Valid.Text().c_str(), Invalid.Text().c_str()));
                     return;
@@ -922,7 +990,7 @@ namespace Apostol {
                 ParseString(prompt, Prompt, Valid, Invalid);
 
                 if (Invalid.Count() > 0) {
-                    RedirectError(AConnection, redirect_error, 400, "unsupported_prompt_type",
+                    RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "unsupported_prompt_type",
                                   CString().Format("Some requested prompt type were invalid: {valid=[%s], invalid=[%s]}",
                                                    Valid.Text().c_str(), Invalid.Text().c_str()));
                     return;
@@ -953,7 +1021,7 @@ namespace Apostol {
                 const auto &Error = LRequest->Params["error"];
 
                 if (!Error.IsEmpty()) {
-                    const auto ErrorCode = StrToIntDef(LRequest->Params["code"].c_str(), 400);
+                    const auto ErrorCode = StrToIntDef(LRequest->Params["code"].c_str(), CHTTPReply::bad_request);
                     RedirectError(AConnection, redirect_error, ErrorCode, Error, LRequest->Params["error_description"]);
                     return;
                 }
@@ -995,10 +1063,10 @@ namespace Apostol {
 
                         pClient->Active(true);
                     } else {
-                        RedirectError(AConnection, redirect_error, 400, "invalid_request", "Parameter \"token_uri\" not found in provider configuration.");
+                        RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request", "Parameter \"token_uri\" not found in provider configuration.");
                     }
                 } else {
-                    RedirectError(AConnection, redirect_error, 400, "invalid_request", "Parameter \"code\" not found.");
+                    RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request", "Parameter \"code\" not found.");
                 }
 
                 return;
@@ -1008,20 +1076,12 @@ namespace Apostol {
                 oauthLocation = redirect_callback;
 
             } else if (Action == "identifier") {
-
-                const auto& Value = LRequest->Params["value"];
-
-                if (Value.IsEmpty()) {
-                    ReplyError(AConnection, 400, "invalid_request", "Invalid request.");
-                    return;
-                }
-
-                Identifier(AConnection, Value);
+                DoIdentifier(AConnection);
                 return;
             }
 
             if (oauthLocation.IsEmpty())
-                ReplyError(AConnection, 404, "invalid_request", "Not found.");
+                AConnection->SendStockReply(CHTTPReply::not_found);
             else
                 Redirect(AConnection, oauthLocation);
         }
@@ -1038,7 +1098,7 @@ namespace Apostol {
             SplitColumns(LRequest->Location.pathname, LRouts, '/');
 
             if (LRouts.Count() < 2) {
-                ReplyError(AConnection, 404, "invalid_request", "Not found.");
+                ReplyError(AConnection, CHTTPReply::not_found, "invalid_request", "Not found.");
                 return;
             }
 
@@ -1050,11 +1110,13 @@ namespace Apostol {
 
                 if (Action == "token") {
                     DoToken(AConnection);
+                } else if (Action == "identifier") {
+                    DoIdentifier(AConnection);
                 } else {
-                    ReplyError(AConnection, 404, "invalid_request", "Not found.");
+                    ReplyError(AConnection, CHTTPReply::not_found, "invalid_request", "Not found.");
                 }
             } catch (Delphi::Exception::Exception &E) {
-                ReplyError(AConnection, 400, "invalid_request", E.what());
+                ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request", E.what());
             }
         }
         //--------------------------------------------------------------------------------------------------------------
@@ -1160,7 +1222,7 @@ namespace Apostol {
 
         bool CAuthServer::Enabled() {
             if (m_ModuleStatus == msUnknown)
-                m_ModuleStatus = Config()->IniFile().ReadBool("worker/AuthServer", "enable", true) ? msEnabled : msDisabled;
+                m_ModuleStatus = Config()->IniFile().ReadBool(SectionName(), "enable", true) ? msEnabled : msDisabled;
             return m_ModuleStatus == msEnabled;
         }
         //--------------------------------------------------------------------------------------------------------------

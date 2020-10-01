@@ -58,6 +58,8 @@ namespace Apostol {
 
             static void ParseString(const CString &String, const CStringList &Strings, CStringList &Valid, CStringList &Invalid);
 
+            static bool CheckAuthorizationData(CHTTPRequest *ARequest, CAuthorization &Authorization);
+
             static int CheckOAuth2Error(const CJSON &Json, CString &Error, CString &ErrorDescription);
             static int CheckError(const CJSON &Json, CString &ErrorMessage, bool RaiseIfError = false);
 
@@ -75,6 +77,7 @@ namespace Apostol {
             void DoPost(CHTTPServerConnection *AConnection);
 
             void DoToken(CHTTPServerConnection *AConnection);
+            void DoIdentifier(CHTTPServerConnection *AConnection);
 
             void DoPostgresQueryExecuted(CPQPollQuery *APollQuery) override;
             void DoPostgresQueryException(CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) override;
@@ -89,7 +92,7 @@ namespace Apostol {
                 return new CAuthServer(AProcess);
             }
 
-            void Identifier(CHTTPServerConnection *AConnection, const CString &Identifier);
+            bool CheckAuthorization(CHTTPServerConnection *AConnection, CAuthorization &Authorization);
 
             void Heartbeat() override;
 

@@ -526,7 +526,7 @@ namespace Apostol {
 
             AConnection->SendReply(Status, nullptr, true);
 
-            Log()->Error(APP_LOG_EMERG, 0, _T("ReplyError: %s"), Message.c_str());
+            Log()->Error(APP_LOG_NOTICE, 0, _T("ReplyError: %s"), Message.c_str());
         };
         //--------------------------------------------------------------------------------------------------------------
 
@@ -602,17 +602,21 @@ namespace Apostol {
                     const auto Index = OAuth2::Helper::ProviderByClientId(Providers, client_id, Application);
                     if (Index != -1) {
                         const auto &Provider = Providers[Index].Value();
-                        if (Application == "web") {
+                        if (Application == "web" || Application == "service") {
                             if (!redirect_uri.IsEmpty()) {
                                 const auto &RedirectURI = Provider.RedirectURI(Application);
-                                if (RedirectURI.IndexOfName(redirect_uri) == -1)
+                                if (RedirectURI.IndexOfName(redirect_uri) == -1) {
                                     ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
                                                CString().Format(redirect_error, redirect_uri.c_str()));
+                                    return;
+                                }
                             } else {
                                 const auto &JavaScriptOrigins = Provider.JavaScriptOrigins(Application);
-                                if (JavaScriptOrigins.IndexOfName(Origin) == -1)
+                                if (JavaScriptOrigins.IndexOfName(Origin) == -1) {
                                     ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
                                                CString().Format(js_origin_error, Origin.c_str()));
+                                    return;
+                                }
                             }
                             Authorization.Password = Provider.Secret(Application);
                         }
@@ -629,8 +633,10 @@ namespace Apostol {
                 }
             }
 
-            if (Authorization.Password.IsEmpty())
+            if (Authorization.Password.IsEmpty()) {
                 ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request", CString().Format(value_error, "client_secret"));
+                return;
+            }
 
             const auto &Agent = GetUserAgent(AConnection);
             const auto &Host = GetHost(AConnection);

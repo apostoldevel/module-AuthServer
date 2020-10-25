@@ -319,7 +319,9 @@ namespace Apostol {
             const auto& Provider = Providers[Index].Value();
 
             const auto& iss = CString(decoded.get_issuer());
-            const CStringList& Issuers = Provider.GetIssuers(Application);
+
+            CStringList Issuers;
+            Provider.GetIssuers(Application, Issuers);
             if (Issuers[iss].IsEmpty())
                 throw jwt::token_verification_exception("Token doesn't contain the required issuer.");
 
@@ -604,14 +606,16 @@ namespace Apostol {
                         const auto &Provider = Providers[Index].Value();
                         if (Application == "web" || Application == "service") {
                             if (!redirect_uri.IsEmpty()) {
-                                const auto &RedirectURI = Provider.RedirectURI(Application);
+                                CStringList RedirectURI;
+                                Provider.RedirectURI(Application, RedirectURI);
                                 if (RedirectURI.IndexOfName(redirect_uri) == -1) {
                                     ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
                                                CString().Format(redirect_error, redirect_uri.c_str()));
                                     return;
                                 }
                             } else {
-                                const auto &JavaScriptOrigins = Provider.JavaScriptOrigins(Application);
+                                CStringList JavaScriptOrigins;
+                                Provider.JavaScriptOrigins(Application, JavaScriptOrigins);
                                 if (JavaScriptOrigins.IndexOfName(Origin) == -1) {
                                     ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
                                                CString().Format(js_origin_error, Origin.c_str()));
@@ -954,14 +958,19 @@ namespace Apostol {
                 }
 
                 const auto &Provider = Providers.Default().Value();
-                const auto &Application = Provider.GetClients()[client_id];
+
+                CStringList clients;
+                Provider.GetClients(clients);
+                const auto &Application = clients[client_id];
 
                 if (Application.IsEmpty()) {
                     RedirectError(AConnection, redirect_error, CHTTPReply::unauthorized, "invalid_client", CString().Format("The OAuth client was not found."));
                     return;
                 }
 
-                if (Provider.RedirectURI(Application).IndexOfName(redirect_uri) == -1) {
+                CStringList RedirectURIs;
+                Provider.RedirectURI(Application, RedirectURIs);
+                if (RedirectURIs.IndexOfName(redirect_uri) == -1) {
                     RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request",
                                   CString().Format("Invalid parameter value for redirect_uri: Non-public domains not allowed: %s", redirect_uri.c_str()));
                     return;
@@ -985,7 +994,8 @@ namespace Apostol {
                     return;
                 }
 
-                const auto &Scopes = Provider.GetScopes(Application);
+                CStringList Scopes;
+                Provider.GetScopes(Application, Scopes);
                 ParseString(scope, Scopes, Valid, Invalid);
 
                 if (Invalid.Count() > 0) {

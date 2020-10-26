@@ -44,6 +44,8 @@ namespace Apostol {
 
             void InitMethods() override;
 
+            void FetchAccessToken(CHTTPServerConnection *AConnection, const CProvider &Provider, const CString& Code);
+
             void FetchCerts(CProvider &Provider);
 
             void FetchProviders();

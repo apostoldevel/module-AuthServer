@@ -30,6 +30,8 @@ Author:
 #include "jwt.h"
 //----------------------------------------------------------------------------------------------------------------------
 
+#define PROVIDER_APPLICATION_NAME "web"
+
 extern "C++" {
 
 namespace Apostol {
@@ -281,7 +283,7 @@ namespace Apostol {
         CString CAuthServer::CreateToken(const CCleanToken& CleanToken) {
             const auto& Providers = Server().Providers();
             const auto& Default = Providers.Default().Value();
-            const CString Application("web");
+            const CString Application(PROVIDER_APPLICATION_NAME);
             auto token = jwt::create()
                     .set_issuer(Default.Issuer(Application))
                     .set_audience(Default.ClientId(Application))
@@ -582,7 +584,7 @@ namespace Apostol {
             const auto &grant_type = Json["grant_type"].AsString();
             const auto &redirect_uri = Json["redirect_uri"].AsString();
 
-            CString Application("web");
+            CString Application(PROVIDER_APPLICATION_NAME);
             const auto &Origin = GetOrigin(AConnection);
 
             CAuthorization Authorization;
@@ -604,7 +606,7 @@ namespace Apostol {
                     const auto Index = OAuth2::Helper::ProviderByClientId(Providers, client_id, Application);
                     if (Index != -1) {
                         const auto &Provider = Providers[Index].Value();
-                        if (Application == "web" || Application == "service") {
+                        if (Application == PROVIDER_APPLICATION_NAME || Application == "service") { // TODO: Need delete application "service"
                             if (!redirect_uri.IsEmpty()) {
                                 CStringList RedirectURI;
                                 Provider.RedirectURI(Application, RedirectURI);
@@ -801,7 +803,7 @@ namespace Apostol {
         }
         //--------------------------------------------------------------------------------------------------------------
 
-        void CAuthServer::DoGet(CHTTPServerConnection *AConnection) {
+        void CAuthServer::FetchAccessToken(CHTTPServerConnection *AConnection, const CProvider &Provider, const CString &Code) {
 
             auto OnRequestToken = [](CHTTPClient *Sender, CHTTPRequest *Request) {
 
@@ -878,14 +880,49 @@ namespace Apostol {
 
                 DebugReply(LConnection->Reply());
 
-                const auto &redirectError = AConnection->Data()["redirect_error"];
+                const auto &redirect_error = AConnection->Data()["redirect_error"];
 
                 if (!AConnection->ClosedGracefully())
-                    RedirectError(AConnection, redirectError, CHTTPReply::internal_server_error, "server_error", E.what());
+                    RedirectError(AConnection, redirect_error, CHTTPReply::internal_server_error, "server_error", E.what());
 
-                Log()->Error(APP_LOG_EMERG, 0, "[%s:%d] %s", LClient->Host().c_str(), LClient->Port(),
-                             E.what());
+                Log()->Error(APP_LOG_EMERG, 0, "[%s:%d] %s", LClient->Host().c_str(), LClient->Port(), E.what());
             };
+
+            auto LRequest = AConnection->Request();
+
+            const auto &redirect_error = AConnection->Data()["redirect_error"];
+            const auto &Application = PROVIDER_APPLICATION_NAME;
+
+            CString TokenURI(Provider.TokenURI(Application));
+
+            if (!TokenURI.IsEmpty()) {
+                if (TokenURI.front() == '/') {
+                    TokenURI = LRequest->Location.Origin() + TokenURI;
+                }
+
+                CLocation URI(TokenURI);
+
+                auto pClient = GetClient(URI.hostname, URI.port);
+
+                pClient->Data().Values("client_id", Provider.ClientId(Application));
+                pClient->Data().Values("client_secret", Provider.Secret(Application));
+                pClient->Data().Values("grant_type", "authorization_code");
+                pClient->Data().Values("code", Code);
+                pClient->Data().Values("redirect_uri", LRequest->Location.Origin() + LRequest->Location.pathname);
+                pClient->Data().Values("token_uri", URI.pathname);
+
+                pClient->OnRequest(OnRequestToken);
+                pClient->OnExecute(OnReplyToken);
+                pClient->OnException(OnException);
+
+                pClient->Active(true);
+            } else {
+                RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request", "Parameter \"token_uri\" not found in provider configuration.");
+            }
+        }
+        //--------------------------------------------------------------------------------------------------------------
+
+        void CAuthServer::DoGet(CHTTPServerConnection *AConnection) {
 
             auto SetSearch = [](const CStringList &Search, CString &Location) {
                 for (int i = 0; i < Search.Count(); ++i) {
@@ -1051,38 +1088,11 @@ namespace Apostol {
                     const auto &providerName = LRouts.Count() == 3 ? LRouts[2].Lower() : "default";
                     const auto &Provider = Providers[providerName].Value();
 
-                    const auto &Application = "web";
+                    AConnection->Data().Values("provider", providerName);
+                    AConnection->Data().Values("redirect", redirect_callback);
+                    AConnection->Data().Values("redirect_error", redirect_error);
 
-                    CString TokenURI(Provider.TokenURI(Application));
-
-                    if (!TokenURI.IsEmpty()) {
-                        if (TokenURI.front() == '/') {
-                            TokenURI = LRequest->Location.Origin() + TokenURI;
-                        }
-
-                        CLocation URI(TokenURI);
-
-                        auto pClient = GetClient(URI.hostname, URI.port);
-
-                        AConnection->Data().Values("provider", providerName);
-                        AConnection->Data().Values("redirect", redirect_callback);
-                        AConnection->Data().Values("redirect_error", redirect_error);
-
-                        pClient->Data().Values("client_id", Provider.ClientId(Application));
-                        pClient->Data().Values("client_secret", Provider.Secret(Application));
-                        pClient->Data().Values("grant_type", "authorization_code");
-                        pClient->Data().Values("code", code);
-                        pClient->Data().Values("redirect_uri", LRequest->Location.Origin() + LRequest->Location.pathname);
-                        pClient->Data().Values("token_uri", URI.pathname);
-
-                        pClient->OnRequest(OnRequestToken);
-                        pClient->OnExecute(OnReplyToken);
-                        pClient->OnException(OnException);
-
-                        pClient->Active(true);
-                    } else {
-                        RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request", "Parameter \"token_uri\" not found in provider configuration.");
-                    }
+                    FetchAccessToken(AConnection, Provider, code);
                 } else {
                     RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request", "Parameter \"code\" not found.");
                 }
@@ -1141,7 +1151,7 @@ namespace Apostol {
 
         void CAuthServer::FetchCerts(CProvider &Provider) {
 
-            const auto& URI = Provider.CertURI("web");
+            const auto& URI = Provider.CertURI(PROVIDER_APPLICATION_NAME);
 
             if (URI.IsEmpty()) {
                 Log()->Error(APP_LOG_INFO, 0, _T("Certificate URI in provider \"%s\" is empty."), Provider.Name.c_str());
@@ -1153,7 +1163,7 @@ namespace Apostol {
             auto OnRequest = [&Provider](CHTTPClient *Sender, CHTTPRequest *Request) {
                 Provider.KeyStatusTime = Now();
                 Provider.KeyStatus = CProvider::ksFetching;
-                CLocation Location(Provider.CertURI("web"));
+                CLocation Location(Provider.CertURI(PROVIDER_APPLICATION_NAME));
                 CHTTPRequest::Prepare(Request, "GET", Location.pathname.c_str());
             };
 
@@ -1205,8 +1215,10 @@ namespace Apostol {
             auto& Providers = Server().Providers();
             for (int i = 0; i < Providers.Count(); i++) {
                 auto& Provider = Providers[i].Value();
-                if (Provider.KeyStatus == CProvider::ksUnknown) {
-                    FetchCerts(Provider);
+                if (Provider.ApplicationExists(PROVIDER_APPLICATION_NAME)) {
+                    if (Provider.KeyStatus == CProvider::ksUnknown) {
+                        FetchCerts(Provider);
+                    }
                 }
             }
         }
@@ -1216,9 +1228,11 @@ namespace Apostol {
             auto& Providers = Server().Providers();
             for (int i = 0; i < Providers.Count(); i++) {
                 auto& Provider = Providers[i].Value();
-                if (Provider.KeyStatus != CProvider::ksUnknown) {
-                    Provider.KeyStatusTime = Now();
-                    Provider.KeyStatus = CProvider::ksUnknown;
+                if (Provider.ApplicationExists(PROVIDER_APPLICATION_NAME)) {
+                    if (Provider.KeyStatus != CProvider::ksUnknown) {
+                        Provider.KeyStatusTime = Now();
+                        Provider.KeyStatus = CProvider::ksUnknown;
+                    }
                 }
             }
         }

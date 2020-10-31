@@ -189,17 +189,17 @@ namespace Apostol {
 
             CString ErrorMessage;
 
-            auto LConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->PollConnection());
+            auto pConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->PollConnection());
 
-            if (LConnection != nullptr && !LConnection->ClosedGracefully()) {
+            if (pConnection != nullptr && !pConnection->ClosedGracefully()) {
 
-                const auto& Path = LConnection->Data()["path"].Lower();
+                const auto& Path = pConnection->Data()["path"].Lower();
 
-                auto LRequest = LConnection->Request();
-                auto LReply = LConnection->Reply();
+                auto pRequest = pConnection->Request();
+                auto pReply = pConnection->Reply();
 
-                const auto& result_object = LRequest->Params[_T("result_object")];
-                const auto& data_array = LRequest->Params[_T("data_array")];
+                const auto& result_object = pRequest->Params[_T("result_object")];
+                const auto& data_array = pRequest->Params[_T("data_array")];
 
                 CHTTPReply::CStatusType LStatus = CHTTPReply::ok;
 
@@ -208,44 +208,44 @@ namespace Apostol {
                         const CJSON Payload(LResult->GetValue(0, 0));
                         LStatus = ErrorCodeToStatus(CheckError(Payload, ErrorMessage));
                         if (LStatus == CHTTPReply::ok) {
-                            AfterQuery(LConnection, Path, Payload);
+                            AfterQuery(pConnection, Path, Payload);
                         }
                     }
 
-                    PQResultToJson(LResult, LReply->Content);
+                    PQResultToJson(LResult, pReply->Content);
                 } catch (Delphi::Exception::Exception &E) {
                     ErrorMessage = E.what();
                     LStatus = CHTTPReply::bad_request;
                     Log()->Error(APP_LOG_EMERG, 0, E.what());
                 }
 
-                const auto& LRedirect = LStatus == CHTTPReply::ok ? LConnection->Data()["redirect"] : LConnection->Data()["redirect_error"];
+                const auto& LRedirect = LStatus == CHTTPReply::ok ? pConnection->Data()["redirect"] : pConnection->Data()["redirect_error"];
 
                 if (LRedirect.IsEmpty()) {
                     if (LStatus == CHTTPReply::ok) {
-                        LConnection->SendReply(LStatus, nullptr, true);
+                        pConnection->SendReply(LStatus, nullptr, true);
                     } else {
-                        ReplyError(LConnection, LStatus, "server_error", ErrorMessage);
+                        ReplyError(pConnection, LStatus, "server_error", ErrorMessage);
                     }
                 } else {
                     if (LStatus == CHTTPReply::ok) {
-                        Redirect(LConnection, LRedirect, true);
+                        Redirect(pConnection, LRedirect, true);
                     } else {
                         switch (LStatus) {
                             case CHTTPReply::unauthorized:
-                                RedirectError(LConnection, LRedirect, LStatus, "unauthorized_client", ErrorMessage);
+                                RedirectError(pConnection, LRedirect, LStatus, "unauthorized_client", ErrorMessage);
                                 break;
 
                             case CHTTPReply::forbidden:
-                                RedirectError(LConnection, LRedirect, LStatus, "access_denied", ErrorMessage);
+                                RedirectError(pConnection, LRedirect, LStatus, "access_denied", ErrorMessage);
                                 break;
 
                             case CHTTPReply::internal_server_error:
-                                RedirectError(LConnection, LRedirect, LStatus, "server_error", ErrorMessage);
+                                RedirectError(pConnection, LRedirect, LStatus, "server_error", ErrorMessage);
                                 break;
 
                             default:
-                                RedirectError(LConnection, LRedirect, LStatus, "invalid_request", ErrorMessage);
+                                RedirectError(pConnection, LRedirect, LStatus, "invalid_request", ErrorMessage);
                                 break;
                         }
                     }
@@ -256,18 +256,18 @@ namespace Apostol {
 
         void CAuthServer::QueryException(CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
 
-            auto LConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->PollConnection());
+            auto pConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->PollConnection());
 
-            if (LConnection != nullptr && !LConnection->ClosedGracefully()) {
-                auto LReply = LConnection->Reply();
+            if (pConnection != nullptr && !pConnection->ClosedGracefully()) {
+                auto pReply = pConnection->Reply();
 
-                const auto& LRedirect = LConnection->Data()["redirect_error"];
+                const auto& LRedirect = pConnection->Data()["redirect_error"];
 
                 if (!LRedirect.IsEmpty()) {
-                    RedirectError(LConnection, LRedirect, CHTTPReply::internal_server_error, "server_error", E.what());
+                    RedirectError(pConnection, LRedirect, CHTTPReply::internal_server_error, "server_error", E.what());
                 } else {
-                    ExceptionToJson(CHTTPReply::internal_server_error, E, LReply->Content);
-                    LConnection->SendReply(CHTTPReply::ok, nullptr, true);
+                    ExceptionToJson(CHTTPReply::internal_server_error, E, pReply->Content);
+                    pConnection->SendReply(CHTTPReply::ok, nullptr, true);
                 }
             }
 
@@ -412,10 +412,10 @@ namespace Apostol {
 
         bool CAuthServer::CheckAuthorization(CHTTPServerConnection *AConnection, CAuthorization &Authorization) {
 
-            auto LRequest = AConnection->Request();
+            auto pRequest = AConnection->Request();
 
             try {
-                if (CheckAuthorizationData(LRequest, Authorization)) {
+                if (CheckAuthorizationData(pRequest, Authorization)) {
                     if (Authorization.Schema == CAuthorization::asBearer) {
                         VerifyToken(Authorization.Token);
                         return true;
@@ -444,7 +444,7 @@ namespace Apostol {
 
             auto OnExecuted = [AConnection](CPQPollQuery *APollQuery) {
 
-                auto LReply = AConnection->Reply();
+                auto pReply = AConnection->Reply();
                 auto LResult = APollQuery->Results(0);
 
                 CString ErrorMessage;
@@ -454,14 +454,14 @@ namespace Apostol {
                     if (LResult->ExecStatus() != PGRES_TUPLES_OK)
                         throw Delphi::Exception::EDBError(LResult->GetErrorMessage());
 
-                    LReply->ContentType = CHTTPReply::json;
+                    pReply->ContentType = CHTTPReply::json;
 
                     const CJSON Payload(LResult->GetValue(0, 0));
                     LStatus = ErrorCodeToStatus(CheckError(Payload, ErrorMessage));
-                    PQResultToJson(LResult, LReply->Content);
+                    PQResultToJson(LResult, pReply->Content);
                 } catch (Delphi::Exception::Exception &E) {
-                    LReply->Content.Clear();
-                    ExceptionToJson(LStatus, E, LReply->Content);
+                    pReply->Content.Clear();
+                    ExceptionToJson(LStatus, E, pReply->Content);
                     Log()->Error(APP_LOG_EMERG, 0, E.what());
                 }
 
@@ -472,10 +472,10 @@ namespace Apostol {
                 ReplyError(AConnection, CHTTPReply::internal_server_error, "server_error", E.what());
             };
 
-            auto LRequest = AConnection->Request();
+            auto pRequest = AConnection->Request();
 
             CJSON Json;
-            ContentToJson(LRequest, Json);
+            ContentToJson(pRequest, Json);
 
             const auto &Identifier = Json["value"].AsString();
 
@@ -514,18 +514,18 @@ namespace Apostol {
         //--------------------------------------------------------------------------------------------------------------
 
         void CAuthServer::ReplyError(CHTTPServerConnection *AConnection, int ErrorCode, const CString &Error, const CString &Message) {
-            auto LReply = AConnection->Reply();
+            auto pReply = AConnection->Reply();
 
-            LReply->ContentType = CHTTPReply::json;
+            pReply->ContentType = CHTTPReply::json;
 
             CHTTPReply::CStatusType Status = ErrorCodeToStatus(ErrorCode);
 
             if (ErrorCode == CHTTPReply::unauthorized) {
-                CHTTPReply::AddUnauthorized(LReply, true, "access_denied", Message.c_str());
+                CHTTPReply::AddUnauthorized(pReply, true, "access_denied", Message.c_str());
             }
 
-            LReply->Content.Clear();
-            LReply->Content.Format(R"({"error": "%s", "error_description": "%s"})",
+            pReply->Content.Clear();
+            pReply->Content.Format(R"({"error": "%s", "error_description": "%s"})",
                                    Error.c_str(), Delphi::Json::EncodeJsonString(Message).c_str());
 
             AConnection->SendReply(Status, nullptr, true);
@@ -538,7 +538,7 @@ namespace Apostol {
 
             auto OnExecuted = [AConnection](CPQPollQuery *APollQuery) {
 
-                auto LReply = AConnection->Reply();
+                auto pReply = AConnection->Reply();
                 auto LResult = APollQuery->Results(0);
 
                 CString Error;
@@ -550,9 +550,9 @@ namespace Apostol {
                     if (LResult->ExecStatus() != PGRES_TUPLES_OK)
                         throw Delphi::Exception::EDBError(LResult->GetErrorMessage());
 
-                    PQResultToJson(LResult, LReply->Content);
+                    PQResultToJson(LResult, pReply->Content);
 
-                    const CJSON Json(LReply->Content);
+                    const CJSON Json(pReply->Content);
                     LStatus = ErrorCodeToStatus(CheckOAuth2Error(Json, Error, ErrorDescription));
 
                     if (LStatus == CHTTPReply::ok) {
@@ -573,11 +573,11 @@ namespace Apostol {
             LPCTSTR redirect_error = _T("Invalid parameter value for redirect_uri: Non-public domains not allowed: %s");
             LPCTSTR value_error = _T("Parameter value %s cannot be empty.");
 
-            auto LRequest = AConnection->Request();
-            auto LReply = AConnection->Reply();
+            auto pRequest = AConnection->Request();
+            auto pReply = AConnection->Reply();
 
             CJSON Json;
-            ContentToJson(LRequest, Json);
+            ContentToJson(pRequest, Json);
 
             const auto &client_id = Json["client_id"].AsString();
             const auto &client_secret = Json["client_secret"].AsString();
@@ -588,7 +588,7 @@ namespace Apostol {
             const auto &Origin = GetOrigin(AConnection);
 
             CAuthorization Authorization;
-            const auto &LAuthorization = LRequest->Headers.Values(_T("Authorization"));
+            const auto &LAuthorization = pRequest->Headers.Values(_T("Authorization"));
 
             if (LAuthorization.IsEmpty()) {
                 const auto &Providers = Server().Providers();
@@ -720,11 +720,11 @@ namespace Apostol {
 
         void CAuthServer::SetAuthorizationData(CHTTPServerConnection *AConnection, const CJSON &Payload) {
 
-            auto LReply = AConnection->Reply();
+            auto pReply = AConnection->Reply();
 
             const auto &session = Payload[_T("session")].AsString();
             if (!session.IsEmpty())
-                LReply->SetCookie(_T("SID"), session.c_str(), _T("/"), 60 * SecsPerDay);
+                pReply->SetCookie(_T("SID"), session.c_str(), _T("/"), 60 * SecsPerDay);
 
             CString Redirect = AConnection->Data()["redirect"];
             if (!Redirect.IsEmpty()) {
@@ -805,7 +805,7 @@ namespace Apostol {
 
         void CAuthServer::FetchAccessToken(CHTTPServerConnection *AConnection, const CProvider &Provider, const CString &Code) {
 
-            auto OnRequestToken = [](CHTTPClient *Sender, CHTTPRequest *Request) {
+            auto OnRequestToken = [](CHTTPClient *Sender, CHTTPRequest *ARequest) {
 
                 const auto &token_uri = Sender->Data()["token_uri"];
                 const auto &code = Sender->Data()["code"];
@@ -814,42 +814,41 @@ namespace Apostol {
                 const auto &redirect_uri = Sender->Data()["redirect_uri"];
                 const auto &grant_type = Sender->Data()["grant_type"];
 
-                Request->Content = _T("client_id=");
-                Request->Content << CHTTPServer::URLEncode(client_id);
+                ARequest->Content = _T("client_id=");
+                ARequest->Content << CHTTPServer::URLEncode(client_id);
 
-                Request->Content << _T("&client_secret=");
-                Request->Content << CHTTPServer::URLEncode(client_secret);
+                ARequest->Content << _T("&client_secret=");
+                ARequest->Content << CHTTPServer::URLEncode(client_secret);
 
-                Request->Content << _T("&grant_type=");
-                Request->Content << grant_type;
+                ARequest->Content << _T("&grant_type=");
+                ARequest->Content << grant_type;
 
-                Request->Content << _T("&code=");
-                Request->Content << CHTTPServer::URLEncode(code);
+                ARequest->Content << _T("&code=");
+                ARequest->Content << CHTTPServer::URLEncode(code);
 
-                Request->Content << _T("&redirect_uri=");
-                Request->Content << CHTTPServer::URLEncode(redirect_uri);
+                ARequest->Content << _T("&redirect_uri=");
+                ARequest->Content << CHTTPServer::URLEncode(redirect_uri);
 
-                CHTTPRequest::Prepare(Request, _T("POST"), token_uri.c_str(), _T("application/x-www-form-urlencoded"));
+                CHTTPRequest::Prepare(ARequest, _T("POST"), token_uri.c_str(), _T("application/x-www-form-urlencoded"));
 
-                DebugRequest(Request);
+                DebugRequest(ARequest);
             };
 
             auto OnReplyToken = [this, AConnection](CTCPConnection *Sender) {
 
-                auto LConnection = dynamic_cast<CHTTPClientConnection *> (Sender);
-                auto LClient = LConnection->Client();
-                auto LReply = LConnection->Reply();
+                auto pConnection = dynamic_cast<CHTTPClientConnection *> (Sender);
+                auto pReply = pConnection->Reply();
 
-                DebugReply(LReply);
+                DebugReply(pReply);
 
-                LConnection->CloseConnection(true);
+                pConnection->CloseConnection(true);
 
                 if (AConnection->ClosedGracefully())
                     return true;
 
-                const CJSON Json(LReply->Content);
+                const CJSON Json(pReply->Content);
 
-                if (LReply->Status == CHTTPReply::ok) {
+                if (pReply->Status == CHTTPReply::ok) {
 
                     const auto &provider = AConnection->Data()["provider"];
 
@@ -867,7 +866,7 @@ namespace Apostol {
                     const auto &Error = Json[_T("error")].AsString();
                     const auto &ErrorMessage = Json[_T("error_description")].AsString();
 
-                    RedirectError(AConnection, Location, LReply->Status, Error, ErrorMessage);
+                    RedirectError(AConnection, Location, pReply->Status, Error, ErrorMessage);
                 }
 
                 return true;
@@ -875,20 +874,20 @@ namespace Apostol {
 
             auto OnException = [AConnection](CTCPConnection *Sender, const Delphi::Exception::Exception &E) {
 
-                auto LConnection = dynamic_cast<CHTTPClientConnection *> (Sender);
-                auto LClient = dynamic_cast<CHTTPClient *> (LConnection->Client());
+                auto pConnection = dynamic_cast<CHTTPClientConnection *> (Sender);
+                auto pClient = dynamic_cast<CHTTPClient *> (pConnection->Client());
 
-                DebugReply(LConnection->Reply());
+                DebugReply(pConnection->Reply());
 
                 const auto &redirect_error = AConnection->Data()["redirect_error"];
 
                 if (!AConnection->ClosedGracefully())
                     RedirectError(AConnection, redirect_error, CHTTPReply::internal_server_error, "server_error", E.what());
 
-                Log()->Error(APP_LOG_EMERG, 0, "[%s:%d] %s", LClient->Host().c_str(), LClient->Port(), E.what());
+                Log()->Error(APP_LOG_EMERG, 0, "[%s:%d] %s", pClient->Host().c_str(), pClient->Port(), E.what());
             };
 
-            auto LRequest = AConnection->Request();
+            auto pRequest = AConnection->Request();
 
             const auto &redirect_error = AConnection->Data()["redirect_error"];
             const auto &Application = PROVIDER_APPLICATION_NAME;
@@ -897,7 +896,7 @@ namespace Apostol {
 
             if (!TokenURI.IsEmpty()) {
                 if (TokenURI.front() == '/') {
-                    TokenURI = LRequest->Location.Origin() + TokenURI;
+                    TokenURI = pRequest->Location.Origin() + TokenURI;
                 }
 
                 CLocation URI(TokenURI);
@@ -908,7 +907,7 @@ namespace Apostol {
                 pClient->Data().Values("client_secret", Provider.Secret(Application));
                 pClient->Data().Values("grant_type", "authorization_code");
                 pClient->Data().Values("code", Code);
-                pClient->Data().Values("redirect_uri", LRequest->Location.Origin() + LRequest->Location.pathname);
+                pClient->Data().Values("redirect_uri", pRequest->Location.Origin() + pRequest->Location.pathname);
                 pClient->Data().Values("token_uri", URI.pathname);
 
                 pClient->OnRequest(OnRequestToken);
@@ -935,20 +934,20 @@ namespace Apostol {
                 }
             };
 
-            auto LRequest = AConnection->Request();
-            auto LReply = AConnection->Reply();
+            auto pRequest = AConnection->Request();
+            auto pReply = AConnection->Reply();
 
-            LReply->ContentType = CHTTPReply::html;
+            pReply->ContentType = CHTTPReply::html;
 
             CStringList LRouts;
-            SplitColumns(LRequest->Location.pathname, LRouts, '/');
+            SplitColumns(pRequest->Location.pathname, LRouts, '/');
 
             if (LRouts.Count() < 2) {
                 AConnection->SendStockReply(CHTTPReply::not_found);
                 return;
             }
 
-            const auto &SiteConfig = GetSiteConfig(LRequest->Location.Host());
+            const auto &SiteConfig = GetSiteConfig(pRequest->Location.Host());
 
             const auto &redirect_identifier = SiteConfig["oauth2.identifier"];
             const auto &redirect_callback = SiteConfig["oauth2.callback"];
@@ -980,13 +979,13 @@ namespace Apostol {
 
             if (Action == "authorize" || Action == "auth") {
 
-                const auto &response_type = LRequest->Params["response_type"];
-                const auto &client_id = LRequest->Params["client_id"];
-                const auto &access_type = LRequest->Params["access_type"];
-                const auto &redirect_uri = LRequest->Params["redirect_uri"];
-                const auto &scope = LRequest->Params["scope"];
-                const auto &state = LRequest->Params["state"];
-                const auto &prompt = LRequest->Params["prompt"];
+                const auto &response_type = pRequest->Params["response_type"];
+                const auto &client_id = pRequest->Params["client_id"];
+                const auto &access_type = pRequest->Params["access_type"];
+                const auto &redirect_uri = pRequest->Params["redirect_uri"];
+                const auto &scope = pRequest->Params["scope"];
+                const auto &state = pRequest->Params["state"];
+                const auto &prompt = pRequest->Params["prompt"];
 
                 if (redirect_uri.IsEmpty()) {
                     RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request",
@@ -1073,16 +1072,16 @@ namespace Apostol {
 
             } else if (Action == "code") {
 
-                const auto &Error = LRequest->Params["error"];
+                const auto &Error = pRequest->Params["error"];
 
                 if (!Error.IsEmpty()) {
-                    const auto ErrorCode = StrToIntDef(LRequest->Params["code"].c_str(), CHTTPReply::bad_request);
-                    RedirectError(AConnection, redirect_error, ErrorCode, Error, LRequest->Params["error_description"]);
+                    const auto ErrorCode = StrToIntDef(pRequest->Params["code"].c_str(), CHTTPReply::bad_request);
+                    RedirectError(AConnection, redirect_error, ErrorCode, Error, pRequest->Params["error_description"]);
                     return;
                 }
 
-                const auto &code = LRequest->Params["code"];
-                const auto &state = LRequest->Params["state"];
+                const auto &code = pRequest->Params["code"];
+                const auto &state = pRequest->Params["state"];
 
                 if (!code.IsEmpty()) {
                     const auto &providerName = LRouts.Count() == 3 ? LRouts[2].Lower() : "default";
@@ -1117,13 +1116,13 @@ namespace Apostol {
 
         void CAuthServer::DoPost(CHTTPServerConnection *AConnection) {
 
-            auto LRequest = AConnection->Request();
-            auto LReply = AConnection->Reply();
+            auto pRequest = AConnection->Request();
+            auto pReply = AConnection->Reply();
 
-            LReply->ContentType = CHTTPReply::json;
+            pReply->ContentType = CHTTPReply::json;
 
             CStringList LRouts;
-            SplitColumns(LRequest->Location.pathname, LRouts, '/');
+            SplitColumns(pRequest->Location.pathname, LRouts, '/');
 
             if (LRouts.Count() < 2) {
                 ReplyError(AConnection, CHTTPReply::not_found, "invalid_request", "Not found.");
@@ -1131,7 +1130,7 @@ namespace Apostol {
             }
 
             AConnection->Data().Values("oauth2", "true");
-            AConnection->Data().Values("path", LRequest->Location.pathname);
+            AConnection->Data().Values("path", pRequest->Location.pathname);
 
             try {
                 const auto &Action = LRouts[1].Lower();
@@ -1168,17 +1167,17 @@ namespace Apostol {
             };
 
             auto OnExecute = [&Provider](CTCPConnection *AConnection) {
-                auto LConnection = dynamic_cast<CHTTPClientConnection *> (AConnection);
-                auto LReply = LConnection->Reply();
+                auto pConnection = dynamic_cast<CHTTPClientConnection *> (AConnection);
+                auto pReply = pConnection->Reply();
 
                 try {
-                    DebugRequest(LConnection->Request());
-                    DebugReply(LReply);
+                    DebugRequest(pConnection->Request());
+                    DebugReply(pReply);
 
                     Provider.KeyStatusTime = Now();
 
                     Provider.Keys.Clear();
-                    Provider.Keys << LReply->Content;
+                    Provider.Keys << pReply->Content;
 
                     Provider.KeyStatus = CProvider::ksSuccess;
                 } catch (Delphi::Exception::Exception &E) {
@@ -1186,28 +1185,28 @@ namespace Apostol {
                     Log()->Error(APP_LOG_EMERG, 0, "[Certificate] Message: %s", E.what());
                 }
 
-                LConnection->CloseConnection(true);
+                pConnection->CloseConnection(true);
                 return true;
             };
 
             auto OnException = [&Provider](CTCPConnection *AConnection, const Delphi::Exception::Exception &E) {
-                auto LConnection = dynamic_cast<CHTTPClientConnection *> (AConnection);
-                auto LClient = dynamic_cast<CHTTPClient *> (LConnection->Client());
+                auto pConnection = dynamic_cast<CHTTPClientConnection *> (AConnection);
+                auto pClient = dynamic_cast<CHTTPClient *> (pConnection->Client());
 
                 Provider.KeyStatusTime = Now();
                 Provider.KeyStatus = CProvider::ksFailed;
 
-                Log()->Error(APP_LOG_EMERG, 0, "[%s:%d] %s", LClient->Host().c_str(), LClient->Port(), E.what());
+                Log()->Error(APP_LOG_EMERG, 0, "[%s:%d] %s", pClient->Host().c_str(), pClient->Port(), E.what());
             };
 
             CLocation Location(URI);
-            auto LClient = GetClient(Location.hostname, Location.port);
+            auto pClient = GetClient(Location.hostname, Location.port);
 
-            LClient->OnRequest(OnRequest);
-            LClient->OnExecute(OnExecute);
-            LClient->OnException(OnException);
+            pClient->OnRequest(OnRequest);
+            pClient->OnExecute(OnExecute);
+            pClient->OnException(OnException);
 
-            LClient->Active(true);
+            pClient->Active(true);
         }
         //--------------------------------------------------------------------------------------------------------------
 

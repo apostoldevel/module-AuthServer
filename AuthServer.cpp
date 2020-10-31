@@ -1086,7 +1086,7 @@ namespace Apostol {
 
                 if (!code.IsEmpty()) {
                     const auto &providerName = LRouts.Count() == 3 ? LRouts[2].Lower() : "default";
-                    const auto &Provider = Providers[providerName].Value();
+                    const auto &Provider = Providers[providerName];
 
                     AConnection->Data().Values("provider", providerName);
                     AConnection->Data().Values("redirect", redirect_callback);

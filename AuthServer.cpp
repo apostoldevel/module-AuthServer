@@ -180,10 +180,10 @@ namespace Apostol {
 
         void CAuthServer::DoPostgresQueryExecuted(CPQPollQuery *APollQuery) {
 
-            auto LResult = APollQuery->Results(0);
+            auto pResult = APollQuery->Results(0);
 
-            if (LResult->ExecStatus() != PGRES_TUPLES_OK) {
-                QueryException(APollQuery, Delphi::Exception::EDBError(LResult->GetErrorMessage()));
+            if (pResult->ExecStatus() != PGRES_TUPLES_OK) {
+                QueryException(APollQuery, Delphi::Exception::EDBError(pResult->GetErrorMessage()));
                 return;
             }
 
@@ -204,15 +204,15 @@ namespace Apostol {
                 CHTTPReply::CStatusType LStatus = CHTTPReply::ok;
 
                 try {
-                    if (LResult->nTuples() == 1) {
-                        const CJSON Payload(LResult->GetValue(0, 0));
+                    if (pResult->nTuples() == 1) {
+                        const CJSON Payload(pResult->GetValue(0, 0));
                         LStatus = ErrorCodeToStatus(CheckError(Payload, ErrorMessage));
                         if (LStatus == CHTTPReply::ok) {
                             AfterQuery(pConnection, Path, Payload);
                         }
                     }
 
-                    PQResultToJson(LResult, pReply->Content);
+                    PQResultToJson(pResult, pReply->Content);
                 } catch (Delphi::Exception::Exception &E) {
                     ErrorMessage = E.what();
                     LStatus = CHTTPReply::bad_request;
@@ -445,20 +445,20 @@ namespace Apostol {
             auto OnExecuted = [AConnection](CPQPollQuery *APollQuery) {
 
                 auto pReply = AConnection->Reply();
-                auto LResult = APollQuery->Results(0);
+                auto pResult = APollQuery->Results(0);
 
-                CString ErrorMessage;
+                CString errorMessage;
                 CHTTPReply::CStatusType LStatus = CHTTPReply::internal_server_error;
 
                 try {
-                    if (LResult->ExecStatus() != PGRES_TUPLES_OK)
-                        throw Delphi::Exception::EDBError(LResult->GetErrorMessage());
+                    if (pResult->ExecStatus() != PGRES_TUPLES_OK)
+                        throw Delphi::Exception::EDBError(pResult->GetErrorMessage());
 
                     pReply->ContentType = CHTTPReply::json;
 
-                    const CJSON Payload(LResult->GetValue(0, 0));
-                    LStatus = ErrorCodeToStatus(CheckError(Payload, ErrorMessage));
-                    PQResultToJson(LResult, pReply->Content);
+                    const CJSON Payload(pResult->GetValue(0, 0));
+                    LStatus = ErrorCodeToStatus(CheckError(Payload, errorMessage));
+                    PQResultToJson(pResult, pReply->Content);
                 } catch (Delphi::Exception::Exception &E) {
                     pReply->Content.Clear();
                     ExceptionToJson(LStatus, E, pReply->Content);
@@ -484,8 +484,8 @@ namespace Apostol {
                 return;
             }
 
-            CAuthorization LAuthorization;
-            if (!CheckAuthorization(AConnection, LAuthorization))
+            CAuthorization Authorization;
+            if (!CheckAuthorization(AConnection, Authorization))
                 return;
 
             CStringList SQL;
@@ -501,13 +501,13 @@ namespace Apostol {
         //--------------------------------------------------------------------------------------------------------------
 
         void CAuthServer::RedirectError(CHTTPServerConnection *AConnection, const CString &Location, int ErrorCode, const CString &Error, const CString &Message) {
-            CString ErrorLocation(Location);
+            CString errorLocation(Location);
 
-            ErrorLocation << "?code=" << ErrorCode;
-            ErrorLocation << "&error=" << Error;
-            ErrorLocation << "&error_description=" << CHTTPServer::URLEncode(Message);
+            errorLocation << "?code=" << ErrorCode;
+            errorLocation << "&error=" << Error;
+            errorLocation << "&error_description=" << CHTTPServer::URLEncode(Message);
 
-            Redirect(AConnection, ErrorLocation, true);
+            Redirect(AConnection, errorLocation, true);
 
             Log()->Error(APP_LOG_EMERG, 0, _T("RedirectError: %s"), Message.c_str());
         }
@@ -539,7 +539,7 @@ namespace Apostol {
             auto OnExecuted = [AConnection](CPQPollQuery *APollQuery) {
 
                 auto pReply = AConnection->Reply();
-                auto LResult = APollQuery->Results(0);
+                auto pResult = APollQuery->Results(0);
 
                 CString Error;
                 CString ErrorDescription;
@@ -547,10 +547,10 @@ namespace Apostol {
                 CHTTPReply::CStatusType LStatus;
 
                 try {
-                    if (LResult->ExecStatus() != PGRES_TUPLES_OK)
-                        throw Delphi::Exception::EDBError(LResult->GetErrorMessage());
+                    if (pResult->ExecStatus() != PGRES_TUPLES_OK)
+                        throw Delphi::Exception::EDBError(pResult->GetErrorMessage());
 
-                    PQResultToJson(LResult, pReply->Content);
+                    PQResultToJson(pResult, pReply->Content);
 
                     const CJSON Json(pReply->Content);
                     LStatus = ErrorCodeToStatus(CheckOAuth2Error(Json, Error, ErrorDescription));
@@ -588,9 +588,9 @@ namespace Apostol {
             const auto &Origin = GetOrigin(AConnection);
 
             CAuthorization Authorization;
-            const auto &LAuthorization = pRequest->Headers.Values(_T("Authorization"));
+            const auto &caAuthorization = pRequest->Headers.Values(_T("Authorization"));
 
-            if (LAuthorization.IsEmpty()) {
+            if (caAuthorization.IsEmpty()) {
                 const auto &Providers = Server().Providers();
 
                 Authorization.Schema = CAuthorization::asBasic;
@@ -631,7 +631,7 @@ namespace Apostol {
                     Authorization.Password = client_secret;
                 }
             } else {
-                Authorization << LAuthorization;
+                Authorization << caAuthorization;
 
                 if (Authorization.Schema != CAuthorization::asBasic) {
                     ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request", "Invalid authorization schema.");
@@ -644,8 +644,8 @@ namespace Apostol {
                 return;
             }
 
-            const auto &Agent = GetUserAgent(AConnection);
-            const auto &Host = GetHost(AConnection);
+            const auto &caAgent = GetUserAgent(AConnection);
+            const auto &caHost = GetHost(AConnection);
 
             CStringList SQL;
 
@@ -653,8 +653,8 @@ namespace Apostol {
                                      PQQuoteLiteral(Authorization.Username).c_str(),
                                      PQQuoteLiteral(Authorization.Password).c_str(),
                                      Json.ToString().c_str(),
-                                     PQQuoteLiteral(Agent).c_str(),
-                                     PQQuoteLiteral(Host).c_str()
+                                     PQQuoteLiteral(caAgent).c_str(),
+                                     PQQuoteLiteral(caHost).c_str()
             ));
 
             try {
@@ -682,15 +682,15 @@ namespace Apostol {
                         Authorization.Token = VerifyToken(Authorization.Token);
                     }
 
-                    const auto &Agent = GetUserAgent(AConnection);
-                    const auto &Host = GetHost(AConnection);
+                    const auto &caAgent = GetUserAgent(AConnection);
+                    const auto &caHost = GetHost(AConnection);
 
                     CStringList SQL;
 
                     SQL.Add(CString().Format("SELECT * FROM daemon.signin(%s, %s, %s);",
                                              PQQuoteLiteral(Authorization.Token).c_str(),
-                                             PQQuoteLiteral(Agent).c_str(),
-                                             PQQuoteLiteral(Host).c_str()
+                                             PQQuoteLiteral(caAgent).c_str(),
+                                             PQQuoteLiteral(caHost).c_str()
                     ));
 
                     AConnection->Data().Values("authorized", "false");
@@ -754,18 +754,16 @@ namespace Apostol {
 
         bool CAuthServer::CheckAuthorizationData(CHTTPRequest *ARequest, CAuthorization &Authorization) {
 
-            const auto &LHeaders = ARequest->Headers;
-            const auto &LCookies = ARequest->Cookies;
+            const auto &caHeaders = ARequest->Headers;
+            const auto &caAuthorization = caHeaders.Values(_T("Authorization"));
 
-            const auto &LAuthorization = LHeaders.Values(_T("Authorization"));
+            if (caAuthorization.IsEmpty()) {
 
-            if (LAuthorization.IsEmpty()) {
+                const auto &caSession = caHeaders.Values(_T("Session"));
+                const auto &caSecret = caHeaders.Values(_T("Secret"));
 
-                const auto &headerSession = LHeaders.Values(_T("Session"));
-                const auto &headerSecret = LHeaders.Values(_T("Secret"));
-
-                Authorization.Username = headerSession;
-                Authorization.Password = headerSecret;
+                Authorization.Username = caSession;
+                Authorization.Password = caSecret;
 
                 if (Authorization.Username.IsEmpty() || Authorization.Password.IsEmpty())
                     return false;
@@ -774,7 +772,7 @@ namespace Apostol {
                 Authorization.Type = CAuthorization::atSession;
 
             } else {
-                Authorization << LAuthorization;
+                Authorization << caAuthorization;
             }
 
             return true;
@@ -861,12 +859,12 @@ namespace Apostol {
                         SignInToken(AConnection, Json);
                     }
                 } else {
-                    const auto &Location = AConnection->Data()["redirect_error"];
+                    const auto &redirect_error = AConnection->Data()["redirect_error"];
 
-                    const auto &Error = Json[_T("error")].AsString();
-                    const auto &ErrorMessage = Json[_T("error_description")].AsString();
+                    const auto &error = Json[_T("error")].AsString();
+                    const auto &error_description = Json[_T("error_description")].AsString();
 
-                    RedirectError(AConnection, Location, pReply->Status, Error, ErrorMessage);
+                    RedirectError(AConnection, redirect_error, pReply->Status, error, error_description);
                 }
 
                 return true;
@@ -939,10 +937,10 @@ namespace Apostol {
 
             pReply->ContentType = CHTTPReply::html;
 
-            CStringList LRouts;
-            SplitColumns(pRequest->Location.pathname, LRouts, '/');
+            CStringList cRouts;
+            SplitColumns(pRequest->Location.pathname, cRouts, '/');
 
-            if (LRouts.Count() < 2) {
+            if (cRouts.Count() < 2) {
                 AConnection->SendStockReply(CHTTPReply::not_found);
                 return;
             }
@@ -975,7 +973,7 @@ namespace Apostol {
 
             const auto &Providers = Server().Providers();
 
-            const auto &Action = LRouts[1].Lower();
+            const auto &Action = cRouts[1].Lower();
 
             if (Action == "authorize" || Action == "auth") {
 
@@ -1004,9 +1002,9 @@ namespace Apostol {
                     return;
                 }
 
-                CStringList RedirectURIs;
-                Provider.RedirectURI(Application, RedirectURIs);
-                if (RedirectURIs.IndexOfName(redirect_uri) == -1) {
+                CStringList redirectURIs;
+                Provider.RedirectURI(Application, redirectURIs);
+                if (redirectURIs.IndexOfName(redirect_uri) == -1) {
                     RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request",
                                   CString().Format("Invalid parameter value for redirect_uri: Non-public domains not allowed: %s", redirect_uri.c_str()));
                     return;
@@ -1072,11 +1070,11 @@ namespace Apostol {
 
             } else if (Action == "code") {
 
-                const auto &Error = pRequest->Params["error"];
+                const auto &error = pRequest->Params["error"];
 
-                if (!Error.IsEmpty()) {
+                if (!error.IsEmpty()) {
                     const auto ErrorCode = StrToIntDef(pRequest->Params["code"].c_str(), CHTTPReply::bad_request);
-                    RedirectError(AConnection, redirect_error, ErrorCode, Error, pRequest->Params["error_description"]);
+                    RedirectError(AConnection, redirect_error, ErrorCode, error, pRequest->Params["error_description"]);
                     return;
                 }
 
@@ -1084,7 +1082,7 @@ namespace Apostol {
                 const auto &state = pRequest->Params["state"];
 
                 if (!code.IsEmpty()) {
-                    const auto &providerName = LRouts.Count() == 3 ? LRouts[2].Lower() : "default";
+                    const auto &providerName = cRouts.Count() == 3 ? cRouts[2].Lower() : "default";
                     const auto &Provider = Providers[providerName];
 
                     AConnection->Data().Values("provider", providerName);
@@ -1121,10 +1119,10 @@ namespace Apostol {
 
             pReply->ContentType = CHTTPReply::json;
 
-            CStringList LRouts;
-            SplitColumns(pRequest->Location.pathname, LRouts, '/');
+            CStringList cRouts;
+            SplitColumns(pRequest->Location.pathname, cRouts, '/');
 
-            if (LRouts.Count() < 2) {
+            if (cRouts.Count() < 2) {
                 ReplyError(AConnection, CHTTPReply::not_found, "invalid_request", "Not found.");
                 return;
             }
@@ -1133,11 +1131,11 @@ namespace Apostol {
             AConnection->Data().Values("path", pRequest->Location.pathname);
 
             try {
-                const auto &Action = LRouts[1].Lower();
+                const auto &caAction = cRouts[1].Lower();
 
-                if (Action == "token") {
+                if (caAction == "token") {
                     DoToken(AConnection);
-                } else if (Action == "identifier") {
+                } else if (caAction == "identifier") {
                     DoIdentifier(AConnection);
                 } else {
                     ReplyError(AConnection, CHTTPReply::not_found, "invalid_request", "Not found.");

@@ -541,10 +541,10 @@ namespace Apostol {
                 auto pReply = AConnection->Reply();
                 auto pResult = APollQuery->Results(0);
 
-                CString Error;
-                CString ErrorDescription;
+                CString error;
+                CString errorDescription;
 
-                CHTTPReply::CStatusType LStatus;
+                CHTTPReply::CStatusType status;
 
                 try {
                     if (pResult->ExecStatus() != PGRES_TUPLES_OK)
@@ -553,12 +553,12 @@ namespace Apostol {
                     PQResultToJson(pResult, pReply->Content);
 
                     const CJSON Json(pReply->Content);
-                    LStatus = ErrorCodeToStatus(CheckOAuth2Error(Json, Error, ErrorDescription));
+                    status = ErrorCodeToStatus(CheckOAuth2Error(Json, error, errorDescription));
 
-                    if (LStatus == CHTTPReply::ok) {
-                        AConnection->SendReply(LStatus, nullptr, true);
+                    if (status == CHTTPReply::ok) {
+                        AConnection->SendReply(status, nullptr, true);
                     } else {
-                        ReplyError(AConnection, LStatus, Error, ErrorDescription);
+                        ReplyError(AConnection, status, error, errorDescription);
                     }
                 } catch (Delphi::Exception::Exception &E) {
                     ReplyError(AConnection, CHTTPReply::internal_server_error, "server_error", E.what());
@@ -579,69 +579,77 @@ namespace Apostol {
             CJSON Json;
             ContentToJson(pRequest, Json);
 
-            const auto &client_id = Json["client_id"].AsString();
-            const auto &client_secret = Json["client_secret"].AsString();
-            const auto &grant_type = Json["grant_type"].AsString();
-            const auto &redirect_uri = Json["redirect_uri"].AsString();
-
-            CString Application(PROVIDER_APPLICATION_NAME);
-            const auto &Origin = GetOrigin(AConnection);
-
             CAuthorization Authorization;
-            const auto &caAuthorization = pRequest->Headers.Values(_T("Authorization"));
 
-            if (caAuthorization.IsEmpty()) {
-                const auto &Providers = Server().Providers();
+            const auto &grant_type = Json["grant_type"].AsString();
 
-                Authorization.Schema = CAuthorization::asBasic;
+            if (grant_type != "urn:ietf:params:oauth:grant-type:jwt-bearer") {
 
-                if (client_id.IsEmpty()) {
-                    const auto &Provider = Providers.Default().Value();
-                    Authorization.Username = Provider.ClientId(Application);
-                } else {
-                    Authorization.Username = client_id;
-                }
+                const auto &client_id = Json["client_id"].AsString();
+                const auto &client_secret = Json["client_secret"].AsString();
+                const auto &redirect_uri = Json["redirect_uri"].AsString();
 
-                if (client_secret.IsEmpty()) {
-                    const auto Index = OAuth2::Helper::ProviderByClientId(Providers, client_id, Application);
-                    if (Index != -1) {
-                        const auto &Provider = Providers[Index].Value();
-                        if (Application == PROVIDER_APPLICATION_NAME || Application == "service") { // TODO: Need delete application "service"
-                            if (!redirect_uri.IsEmpty()) {
-                                CStringList RedirectURI;
-                                Provider.RedirectURI(Application, RedirectURI);
-                                if (RedirectURI.IndexOfName(redirect_uri) == -1) {
-                                    ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
-                                               CString().Format(redirect_error, redirect_uri.c_str()));
-                                    return;
+                CString Application(PROVIDER_APPLICATION_NAME);
+                const auto &Origin = GetOrigin(AConnection);
+
+                const auto &caAuthorization = pRequest->Headers.Values(_T("Authorization"));
+
+                if (caAuthorization.IsEmpty()) {
+                    const auto &Providers = Server().Providers();
+
+                    Authorization.Schema = CAuthorization::asBasic;
+
+                    if (client_id.IsEmpty()) {
+                        const auto &Provider = Providers.Default().Value();
+                        Authorization.Username = Provider.ClientId(Application);
+                    } else {
+                        Authorization.Username = client_id;
+                    }
+
+                    if (client_secret.IsEmpty()) {
+                        const auto Index = OAuth2::Helper::ProviderByClientId(Providers, client_id, Application);
+                        if (Index != -1) {
+                            const auto &Provider = Providers[Index].Value();
+                            if (Application == PROVIDER_APPLICATION_NAME ||
+                                Application == "service") { // TODO: Need delete application "service"
+                                if (!redirect_uri.IsEmpty()) {
+                                    CStringList RedirectURI;
+                                    Provider.RedirectURI(Application, RedirectURI);
+                                    if (RedirectURI.IndexOfName(redirect_uri) == -1) {
+                                        ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
+                                                   CString().Format(redirect_error, redirect_uri.c_str()));
+                                        return;
+                                    }
+                                } else {
+                                    CStringList JavaScriptOrigins;
+                                    Provider.JavaScriptOrigins(Application, JavaScriptOrigins);
+                                    if (JavaScriptOrigins.IndexOfName(Origin) == -1) {
+                                        ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
+                                                   CString().Format(js_origin_error, Origin.c_str()));
+                                        return;
+                                    }
                                 }
-                            } else {
-                                CStringList JavaScriptOrigins;
-                                Provider.JavaScriptOrigins(Application, JavaScriptOrigins);
-                                if (JavaScriptOrigins.IndexOfName(Origin) == -1) {
-                                    ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
-                                               CString().Format(js_origin_error, Origin.c_str()));
-                                    return;
-                                }
+                                Authorization.Password = Provider.Secret(Application);
                             }
-                            Authorization.Password = Provider.Secret(Application);
                         }
+                    } else {
+                        Authorization.Password = client_secret;
                     }
                 } else {
-                    Authorization.Password = client_secret;
-                }
-            } else {
-                Authorization << caAuthorization;
+                    Authorization << caAuthorization;
 
-                if (Authorization.Schema != CAuthorization::asBasic) {
-                    ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request", "Invalid authorization schema.");
+                    if (Authorization.Schema != CAuthorization::asBasic) {
+                        ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
+                                   "Invalid authorization schema.");
+                        return;
+                    }
+                }
+
+                if (Authorization.Password.IsEmpty()) {
+                    ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
+                               CString().Format(value_error, "client_secret"));
                     return;
                 }
-            }
-
-            if (Authorization.Password.IsEmpty()) {
-                ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request", CString().Format(value_error, "client_secret"));
-                return;
             }
 
             const auto &caAgent = GetUserAgent(AConnection);
@@ -945,11 +953,11 @@ namespace Apostol {
                 return;
             }
 
-            const auto &SiteConfig = GetSiteConfig(pRequest->Location.Host());
+            const auto &siteConfig = GetSiteConfig(pRequest->Location.Host());
 
-            const auto &redirect_identifier = SiteConfig["oauth2.identifier"];
-            const auto &redirect_callback = SiteConfig["oauth2.callback"];
-            const auto &redirect_error = SiteConfig["oauth2.error"];
+            const auto &redirect_identifier = siteConfig["oauth2.identifier"];
+            const auto &redirect_callback = siteConfig["oauth2.callback"];
+            const auto &redirect_error = siteConfig["oauth2.error"];
 
             CString oauthLocation;
 
@@ -1239,7 +1247,7 @@ namespace Apostol {
             auto now = Now();
 
             if ((now >= m_FixedDate)) {
-                m_FixedDate = now + (CDateTime) 15 * 60 / SecsPerDay; // 15 min
+                m_FixedDate = now + (CDateTime) 30 / MinsPerDay; // 30 min
 
                 CheckProviders();
                 FetchProviders();

@@ -673,7 +673,7 @@ namespace Apostol {
         }
         //--------------------------------------------------------------------------------------------------------------
 
-        void CAuthServer::SignInToken(CHTTPServerConnection *AConnection, const CJSON &Token) {
+        void CAuthServer::Login(CHTTPServerConnection *AConnection, const CJSON &Token) {
 
             const auto &errorLocation = AConnection->Data()["redirect_error"];
 
@@ -695,7 +695,7 @@ namespace Apostol {
 
                     CStringList SQL;
 
-                    SQL.Add(CString().Format("SELECT * FROM daemon.signin(%s, %s, %s);",
+                    SQL.Add(CString().Format("SELECT * FROM daemon.login(%s, %s, %s);",
                                              PQQuoteLiteral(Authorization.Token).c_str(),
                                              PQQuoteLiteral(caAgent).c_str(),
                                              PQQuoteLiteral(caHost).c_str()
@@ -864,7 +864,7 @@ namespace Apostol {
                         const auto &Location = AConnection->Data()["redirect"];
                         Redirect(AConnection, Location, true);
                     } else {
-                        SignInToken(AConnection, Json);
+                        Login(AConnection, Json);
                     }
                 } else {
                     const auto &redirect_error = AConnection->Data()["redirect_error"];

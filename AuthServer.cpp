@@ -201,13 +201,13 @@ namespace Apostol {
                 const auto& result_object = pRequest->Params[_T("result_object")];
                 const auto& data_array = pRequest->Params[_T("data_array")];
 
-                CHTTPReply::CStatusType LStatus = CHTTPReply::ok;
+                CHTTPReply::CStatusType status = CHTTPReply::ok;
 
                 try {
                     if (pResult->nTuples() == 1) {
                         const CJSON Payload(pResult->GetValue(0, 0));
-                        LStatus = ErrorCodeToStatus(CheckError(Payload, ErrorMessage));
-                        if (LStatus == CHTTPReply::ok) {
+                        status = ErrorCodeToStatus(CheckError(Payload, ErrorMessage));
+                        if (status == CHTTPReply::ok) {
                             AfterQuery(pConnection, Path, Payload);
                         }
                     }
@@ -215,37 +215,37 @@ namespace Apostol {
                     PQResultToJson(pResult, pReply->Content);
                 } catch (Delphi::Exception::Exception &E) {
                     ErrorMessage = E.what();
-                    LStatus = CHTTPReply::bad_request;
+                    status = CHTTPReply::bad_request;
                     Log()->Error(APP_LOG_EMERG, 0, E.what());
                 }
 
-                const auto& LRedirect = LStatus == CHTTPReply::ok ? pConnection->Data()["redirect"] : pConnection->Data()["redirect_error"];
+                const auto& LRedirect = status == CHTTPReply::ok ? pConnection->Data()["redirect"] : pConnection->Data()["redirect_error"];
 
                 if (LRedirect.IsEmpty()) {
-                    if (LStatus == CHTTPReply::ok) {
-                        pConnection->SendReply(LStatus, nullptr, true);
+                    if (status == CHTTPReply::ok) {
+                        pConnection->SendReply(status, nullptr, true);
                     } else {
-                        ReplyError(pConnection, LStatus, "server_error", ErrorMessage);
+                        ReplyError(pConnection, status, "server_error", ErrorMessage);
                     }
                 } else {
-                    if (LStatus == CHTTPReply::ok) {
+                    if (status == CHTTPReply::ok) {
                         Redirect(pConnection, LRedirect, true);
                     } else {
-                        switch (LStatus) {
+                        switch (status) {
                             case CHTTPReply::unauthorized:
-                                RedirectError(pConnection, LRedirect, LStatus, "unauthorized_client", ErrorMessage);
+                                RedirectError(pConnection, LRedirect, status, "unauthorized_client", ErrorMessage);
                                 break;
 
                             case CHTTPReply::forbidden:
-                                RedirectError(pConnection, LRedirect, LStatus, "access_denied", ErrorMessage);
+                                RedirectError(pConnection, LRedirect, status, "access_denied", ErrorMessage);
                                 break;
 
                             case CHTTPReply::internal_server_error:
-                                RedirectError(pConnection, LRedirect, LStatus, "server_error", ErrorMessage);
+                                RedirectError(pConnection, LRedirect, status, "server_error", ErrorMessage);
                                 break;
 
                             default:
-                                RedirectError(pConnection, LRedirect, LStatus, "invalid_request", ErrorMessage);
+                                RedirectError(pConnection, LRedirect, status, "invalid_request", ErrorMessage);
                                 break;
                         }
                     }
@@ -448,24 +448,24 @@ namespace Apostol {
                 auto pResult = APollQuery->Results(0);
 
                 CString errorMessage;
-                CHTTPReply::CStatusType LStatus = CHTTPReply::internal_server_error;
+                CHTTPReply::CStatusType status = CHTTPReply::internal_server_error;
 
                 try {
                     if (pResult->ExecStatus() != PGRES_TUPLES_OK)
                         throw Delphi::Exception::EDBError(pResult->GetErrorMessage());
 
                     pReply->ContentType = CHTTPReply::json;
+                    pReply->Content = pResult->GetValue(0, 0);
 
-                    const CJSON Payload(pResult->GetValue(0, 0));
-                    LStatus = ErrorCodeToStatus(CheckError(Payload, errorMessage));
-                    PQResultToJson(pResult, pReply->Content);
+                    const CJSON Payload(pReply->Content);
+                    status = ErrorCodeToStatus(CheckError(Payload, errorMessage));
                 } catch (Delphi::Exception::Exception &E) {
                     pReply->Content.Clear();
-                    ExceptionToJson(LStatus, E, pReply->Content);
+                    ExceptionToJson(status, E, pReply->Content);
                     Log()->Error(APP_LOG_EMERG, 0, E.what());
                 }
 
-                AConnection->SendReply(LStatus, nullptr, true);
+                AConnection->SendReply(status, nullptr, true);
             };
 
             auto OnException = [AConnection](CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
@@ -485,18 +485,26 @@ namespace Apostol {
             }
 
             CAuthorization Authorization;
-            if (!CheckAuthorization(AConnection, Authorization))
-                return;
+            if (CheckAuthorizationData(pRequest, Authorization)) {
+                if (Authorization.Schema == CAuthorization::asBearer) {
+                    CStringList SQL;
 
-            CStringList SQL;
+                    SQL.Add(CString().Format("SELECT * FROM daemon.identifier(%s, %s);",
+                            PQQuoteLiteral(Authorization.Token).c_str(),
+                            PQQuoteLiteral(Identifier).c_str()
+                    ));
 
-            SQL.Add(CString().Format("SELECT * FROM daemon.identifier(%s);", PQQuoteLiteral(Identifier).c_str()));
+                    try {
+                        ExecSQL(SQL, nullptr, OnExecuted, OnException);
+                    } catch (Delphi::Exception::Exception &E) {
+                        ReplyError(AConnection, CHTTPReply::service_unavailable, "temporarily_unavailable", "Temporarily unavailable.");
+                    }
 
-            try {
-                ExecSQL(SQL, nullptr, OnExecuted, OnException);
-            } catch (Delphi::Exception::Exception &E) {
-                ReplyError(AConnection, CHTTPReply::service_unavailable, "temporarily_unavailable", "Temporarily unavailable.");
+                    return;
+                }
             }
+
+            ReplyError(AConnection, CHTTPReply::unauthorized, "unauthorized", "Unauthorized.");
         }
         //--------------------------------------------------------------------------------------------------------------
 

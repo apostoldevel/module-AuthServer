@@ -857,6 +857,9 @@ namespace Apostol {
 
                 pConnection->CloseConnection(true);
 
+                if (!Assigned(AConnection))
+                    return true;
+
                 if (AConnection->ClosedGracefully())
                     return true;
 

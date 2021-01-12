@@ -216,7 +216,7 @@ namespace Apostol {
                 } catch (Delphi::Exception::Exception &E) {
                     ErrorMessage = E.what();
                     status = CHTTPReply::bad_request;
-                    Log()->Error(APP_LOG_EMERG, 0, E.what());
+                    Log()->Error(APP_LOG_ERR, 0, "%s", E.what());
                 }
 
                 const auto& LRedirect = status == CHTTPReply::ok ? pConnection->Data()["redirect"] : pConnection->Data()["redirect_error"];
@@ -271,7 +271,7 @@ namespace Apostol {
                 }
             }
 
-            Log()->Error(APP_LOG_EMERG, 0, E.what());
+            Log()->Error(APP_LOG_ERR, 0, "%s", E.what());
         }
         //--------------------------------------------------------------------------------------------------------------
 
@@ -462,7 +462,7 @@ namespace Apostol {
                 } catch (Delphi::Exception::Exception &E) {
                     pReply->Content.Clear();
                     ExceptionToJson(status, E, pReply->Content);
-                    Log()->Error(APP_LOG_EMERG, 0, E.what());
+                    Log()->Error(APP_LOG_ERR, 0, "%s", E.what());
                 }
 
                 AConnection->SendReply(status, nullptr, true);
@@ -517,7 +517,7 @@ namespace Apostol {
 
             Redirect(AConnection, errorLocation, true);
 
-            Log()->Error(APP_LOG_EMERG, 0, _T("RedirectError: %s"), Message.c_str());
+            Log()->Error(APP_LOG_ERR, 0, _T("RedirectError: %s"), Message.c_str());
         }
         //--------------------------------------------------------------------------------------------------------------
 
@@ -901,7 +901,7 @@ namespace Apostol {
                 if (!AConnection->ClosedGracefully())
                     RedirectError(AConnection, redirect_error, CHTTPReply::internal_server_error, "server_error", E.what());
 
-                Log()->Error(APP_LOG_EMERG, 0, "[%s:%d] %s", pClient->Host().c_str(), pClient->Port(), E.what());
+                Log()->Error(APP_LOG_ERR, 0, "[%s:%d] %s", pClient->Host().c_str(), pClient->Port(), E.what());
             };
 
             auto pRequest = AConnection->Request();
@@ -1199,7 +1199,7 @@ namespace Apostol {
                     Provider.KeyStatus = CProvider::ksSuccess;
                 } catch (Delphi::Exception::Exception &E) {
                     Provider.KeyStatus = CProvider::ksFailed;
-                    Log()->Error(APP_LOG_EMERG, 0, "[Certificate] Message: %s", E.what());
+                    Log()->Error(APP_LOG_ERR, 0, "[Certificate] Message: %s", E.what());
                 }
 
                 pConnection->CloseConnection(true);
@@ -1213,7 +1213,7 @@ namespace Apostol {
                 Provider.KeyStatusTime = Now();
                 Provider.KeyStatus = CProvider::ksFailed;
 
-                Log()->Error(APP_LOG_EMERG, 0, "[%s:%d] %s", pClient->Host().c_str(), pClient->Port(), E.what());
+                Log()->Error(APP_LOG_ERR, 0, "[%s:%d] %s", pClient->Host().c_str(), pClient->Port(), E.what());
             };
 
             CLocation Location(URI);

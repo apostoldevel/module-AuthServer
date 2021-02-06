@@ -1263,8 +1263,6 @@ namespace Apostol {
                 CheckProviders();
                 FetchProviders();
             }
-
-            m_pModuleProcess->ClientManager().CleanUp();
         }
         //--------------------------------------------------------------------------------------------------------------
 

@@ -538,7 +538,7 @@ namespace Apostol {
 
             AConnection->SendReply(Status, nullptr, true);
 
-            Log()->Error(APP_LOG_NOTICE, 0, _T("ReplyError: %s"), Message.c_str());
+            Log()->Notice(_T("ReplyError: %s"), Message.c_str());
         };
         //--------------------------------------------------------------------------------------------------------------
 

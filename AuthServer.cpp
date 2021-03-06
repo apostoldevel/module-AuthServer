@@ -661,7 +661,7 @@ namespace Apostol {
             }
 
             const auto &caAgent = GetUserAgent(AConnection);
-            const auto &caHost = GetHost(AConnection);
+            const auto &caHost = GetRealIP(AConnection);
 
             CStringList SQL;
 
@@ -699,7 +699,7 @@ namespace Apostol {
                     }
 
                     const auto &caAgent = GetUserAgent(AConnection);
-                    const auto &caHost = GetHost(AConnection);
+                    const auto &caHost = GetRealIP(AConnection);
 
                     CStringList SQL;
 

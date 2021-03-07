@@ -869,13 +869,13 @@ namespace Apostol {
 
                     const auto &provider = AConnection->Data()["provider"];
 
-                    if (provider == "default") {
+                    if (provider == "google") {
+                        Login(AConnection, Json);
+                    } else {
                         SetAuthorizationData(AConnection, Json);
                         // Set after call SetAuthorizationData()
                         const auto &Location = AConnection->Data()["redirect"];
                         Redirect(AConnection, Location, true);
-                    } else {
-                        Login(AConnection, Json);
                     }
                 } else {
                     const auto &redirect_error = AConnection->Data()["redirect_error"];
@@ -1010,16 +1010,18 @@ namespace Apostol {
                     return;
                 }
 
-                const auto &Provider = Providers.Default().Value();
+                CString Application;
 
-                CStringList clients;
-                Provider.GetClients(clients);
-                const auto &Application = clients[client_id];
-
-                if (Application.IsEmpty()) {
+                const auto Index = OAuth2::Helper::ProviderByClientId(Providers, client_id, Application);
+                if (Index == -1) {
                     RedirectError(AConnection, redirect_error, CHTTPReply::unauthorized, "invalid_client", CString().Format("The OAuth client was not found."));
                     return;
                 }
+
+                const auto& Provider = Providers[Index].Value();
+
+                CStringList clients;
+                Provider.GetClients(clients);
 
                 CStringList redirectURIs;
                 Provider.RedirectURI(Application, redirectURIs);

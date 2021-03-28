@@ -189,7 +189,7 @@ namespace Apostol {
 
             CString ErrorMessage;
 
-            auto pConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->PollConnection());
+            auto pConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->Binding());
 
             if (pConnection != nullptr && !pConnection->ClosedGracefully()) {
 
@@ -219,9 +219,9 @@ namespace Apostol {
                     Log()->Error(APP_LOG_ERR, 0, "%s", E.what());
                 }
 
-                const auto& LRedirect = status == CHTTPReply::ok ? pConnection->Data()["redirect"] : pConnection->Data()["redirect_error"];
+                const auto& caRedirect = status == CHTTPReply::ok ? pConnection->Data()["redirect"] : pConnection->Data()["redirect_error"];
 
-                if (LRedirect.IsEmpty()) {
+                if (caRedirect.IsEmpty()) {
                     if (status == CHTTPReply::ok) {
                         pConnection->SendReply(status, nullptr, true);
                     } else {
@@ -229,23 +229,23 @@ namespace Apostol {
                     }
                 } else {
                     if (status == CHTTPReply::ok) {
-                        Redirect(pConnection, LRedirect, true);
+                        Redirect(pConnection, caRedirect, true);
                     } else {
                         switch (status) {
                             case CHTTPReply::unauthorized:
-                                RedirectError(pConnection, LRedirect, status, "unauthorized_client", ErrorMessage);
+                                RedirectError(pConnection, caRedirect, status, "unauthorized_client", ErrorMessage);
                                 break;
 
                             case CHTTPReply::forbidden:
-                                RedirectError(pConnection, LRedirect, status, "access_denied", ErrorMessage);
+                                RedirectError(pConnection, caRedirect, status, "access_denied", ErrorMessage);
                                 break;
 
                             case CHTTPReply::internal_server_error:
-                                RedirectError(pConnection, LRedirect, status, "server_error", ErrorMessage);
+                                RedirectError(pConnection, caRedirect, status, "server_error", ErrorMessage);
                                 break;
 
                             default:
-                                RedirectError(pConnection, LRedirect, status, "invalid_request", ErrorMessage);
+                                RedirectError(pConnection, caRedirect, status, "invalid_request", ErrorMessage);
                                 break;
                         }
                     }
@@ -256,15 +256,15 @@ namespace Apostol {
 
         void CAuthServer::QueryException(CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
 
-            auto pConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->PollConnection());
+            auto pConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->Binding());
 
             if (pConnection != nullptr && !pConnection->ClosedGracefully()) {
                 auto pReply = pConnection->Reply();
 
-                const auto& LRedirect = pConnection->Data()["redirect_error"];
+                const auto& caRedirect = pConnection->Data()["redirect_error"];
 
-                if (!LRedirect.IsEmpty()) {
-                    RedirectError(pConnection, LRedirect, CHTTPReply::internal_server_error, "server_error", E.what());
+                if (!caRedirect.IsEmpty()) {
+                    RedirectError(pConnection, caRedirect, CHTTPReply::internal_server_error, "server_error", E.what());
                 } else {
                     ExceptionToJson(CHTTPReply::internal_server_error, E, pReply->Content);
                     pConnection->SendReply(CHTTPReply::ok, nullptr, true);

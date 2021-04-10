@@ -742,8 +742,8 @@ namespace Apostol {
             if (!session.IsEmpty())
                 pReply->SetCookie(_T("SID"), session.c_str(), _T("/"), 60 * SecsPerDay);
 
-            CString Redirect = AConnection->Data()["redirect"];
-            if (!Redirect.IsEmpty()) {
+            CString sRedirect = AConnection->Data()["redirect"];
+            if (!sRedirect.IsEmpty()) {
 
                 const auto &access_token = Payload[_T("access_token")].AsString();
                 const auto &refresh_token = Payload[_T("refresh_token")].AsString();
@@ -751,19 +751,19 @@ namespace Apostol {
                 const auto &expires_in = Payload[_T("expires_in")].AsString();
                 const auto &state = Payload[_T("state")].AsString();
 
-                Redirect << "#access_token=" << access_token;
+                sRedirect << "#access_token=" << access_token;
 
                 if (!refresh_token.IsEmpty())
-                    Redirect << "&refresh_token=" << CHTTPServer::URLEncode(refresh_token);
+                    sRedirect << "&refresh_token=" << CHTTPServer::URLEncode(refresh_token);
 
-                Redirect << "&token_type=" << token_type;
-                Redirect << "&expires_in=" << expires_in;
-                Redirect << "&session=" << session;
+                sRedirect << "&token_type=" << token_type;
+                sRedirect << "&expires_in=" << expires_in;
+                sRedirect << "&session=" << session;
 
                 if (!state.IsEmpty())
-                    Redirect << "&state=" << CHTTPServer::URLEncode(state);
+                    sRedirect << "&state=" << CHTTPServer::URLEncode(state);
 
-                AConnection->Data().Values("redirect", Redirect);
+                AConnection->Data().Values("redirect", sRedirect);
             }
         }
         //--------------------------------------------------------------------------------------------------------------
@@ -858,24 +858,19 @@ namespace Apostol {
                 pConnection->CloseConnection(true);
 
                 if (!Assigned(AConnection))
-                    return true;
+                    return false;
 
                 if (AConnection->ClosedGracefully())
-                    return true;
+                    return false;
 
                 const CJSON Json(pReply->Content);
 
                 if (pReply->Status == CHTTPReply::ok) {
-
-                    const auto &provider = AConnection->Data()["provider"];
-
-                    if (provider == "google") {
+                    if (AConnection->Data()["provider"] == "google") {
                         Login(AConnection, Json);
                     } else {
                         SetAuthorizationData(AConnection, Json);
-                        // Set after call SetAuthorizationData()
-                        const auto &Location = AConnection->Data()["redirect"];
-                        Redirect(AConnection, Location, true);
+                        Redirect(AConnection, AConnection->Data()["redirect"], true);
                     }
                 } else {
                     const auto &redirect_error = AConnection->Data()["redirect_error"];
@@ -907,21 +902,21 @@ namespace Apostol {
             auto pRequest = AConnection->Request();
 
             const auto &redirect_error = AConnection->Data()["redirect_error"];
-            const auto &Application = PROVIDER_APPLICATION_NAME;
+            const auto &caApplication = PROVIDER_APPLICATION_NAME;
 
-            CString TokenURI(Provider.TokenURI(Application));
+            CString sTokenURI(Provider.TokenURI(caApplication));
 
-            if (!TokenURI.IsEmpty()) {
-                if (TokenURI.front() == '/') {
-                    TokenURI = pRequest->Location.Origin() + TokenURI;
+            if (!sTokenURI.IsEmpty()) {
+                if (sTokenURI.front() == '/') {
+                    sTokenURI = pRequest->Location.Origin() + sTokenURI;
                 }
 
-                CLocation URI(TokenURI);
+                CLocation URI(sTokenURI);
 
                 auto pClient = GetClient(URI.hostname, URI.port);
 
-                pClient->Data().Values("client_id", Provider.ClientId(Application));
-                pClient->Data().Values("client_secret", Provider.Secret(Application));
+                pClient->Data().Values("client_id", Provider.ClientId(caApplication));
+                pClient->Data().Values("client_secret", Provider.Secret(caApplication));
                 pClient->Data().Values("grant_type", "authorization_code");
                 pClient->Data().Values("code", Code);
                 pClient->Data().Values("redirect_uri", pRequest->Location.Origin() + pRequest->Location.pathname);
@@ -956,10 +951,10 @@ namespace Apostol {
 
             pReply->ContentType = CHTTPReply::html;
 
-            CStringList cRouts;
-            SplitColumns(pRequest->Location.pathname, cRouts, '/');
+            CStringList slRouts;
+            SplitColumns(pRequest->Location.pathname, slRouts, '/');
 
-            if (cRouts.Count() < 2) {
+            if (slRouts.Count() < 2) {
                 AConnection->SendStockReply(CHTTPReply::not_found);
                 return;
             }
@@ -969,32 +964,33 @@ namespace Apostol {
             const auto &redirect_identifier = siteConfig["oauth2.identifier"];
             const auto &redirect_callback = siteConfig["oauth2.callback"];
             const auto &redirect_error = siteConfig["oauth2.error"];
+            const auto &redirect_debug = siteConfig["oauth2.debug"];
 
             CString oauthLocation;
 
-            CStringList Search;
-            CStringList Valid;
-            CStringList Invalid;
+            CStringList slSearch;
+            CStringList slValid;
+            CStringList slInvalid;
 
-            CStringList ResponseType;
-            ResponseType.Add("code");
-            ResponseType.Add("token");
+            CStringList slResponseType;
+            slResponseType.Add("code");
+            slResponseType.Add("token");
 
-            CStringList AccessType;
-            AccessType.Add("online");
-            AccessType.Add("offline");
+            CStringList slAccessType;
+            slAccessType.Add("online");
+            slAccessType.Add("offline");
 
-            CStringList Prompt;
-            Prompt.Add("none");
-            Prompt.Add("signin");
-            Prompt.Add("consent");
-            Prompt.Add("select_account");
+            CStringList slPrompt;
+            slPrompt.Add("none");
+            slPrompt.Add("signin");
+            slPrompt.Add("consent");
+            slPrompt.Add("select_account");
 
-            const auto &Providers = Server().Providers();
+            const auto &caProviders = Server().Providers();
 
-            const auto &Action = cRouts[1].Lower();
+            const auto &caAction = slRouts[1].Lower();
 
-            if (Action == "authorize" || Action == "auth") {
+            if (caAction == "authorize" || caAction == "auth") {
 
                 const auto &response_type = pRequest->Params["response_type"];
                 const auto &client_id = pRequest->Params["client_id"];
@@ -1010,92 +1006,89 @@ namespace Apostol {
                     return;
                 }
 
-                CString Application;
+                CString sApplication;
 
-                const auto Index = OAuth2::Helper::ProviderByClientId(Providers, client_id, Application);
+                const auto Index = OAuth2::Helper::ProviderByClientId(caProviders, client_id, sApplication);
                 if (Index == -1) {
                     RedirectError(AConnection, redirect_error, CHTTPReply::unauthorized, "invalid_client", CString().Format("The OAuth client was not found."));
                     return;
                 }
 
-                const auto& Provider = Providers[Index].Value();
+                const auto& caProvider = caProviders[Index].Value();
 
-                CStringList clients;
-                Provider.GetClients(clients);
-
-                CStringList redirectURIs;
-                Provider.RedirectURI(Application, redirectURIs);
-                if (redirectURIs.IndexOfName(redirect_uri) == -1) {
+                CStringList slRedirectURI;
+                caProvider.RedirectURI(sApplication, slRedirectURI);
+                if (slRedirectURI.IndexOfName(redirect_uri) == -1) {
                     RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request",
-                                  CString().Format("Invalid parameter value for redirect_uri: Non-public domains not allowed: %s", redirect_uri.c_str()));
+                                  CString().Format("slInvalid parameter value for redirect_uri: Non-public domains not allowed: %s", redirect_uri.c_str()));
                     return;
                 }
 
-                ParseString(response_type, ResponseType, Valid, Invalid);
+                ParseString(response_type, slResponseType, slValid, slInvalid);
 
-                if (Invalid.Count() > 0) {
+                if (slInvalid.Count() > 0) {
                     RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "unsupported_response_type",
                                   CString().Format("Some requested response type were invalid: {valid=[%s], invalid=[%s]}",
-                                                   Valid.Text().c_str(), Invalid.Text().c_str()));
+                                                   slValid.Text().c_str(), slInvalid.Text().c_str()));
                     return;
                 }
 
                 if (response_type == "token")
-                    AccessType.Clear();
+                    slAccessType.Clear();
 
-                if (!access_type.IsEmpty() && AccessType.IndexOfName(access_type) == -1) {
+                if (!access_type.IsEmpty() && slAccessType.IndexOfName(access_type) == -1) {
                     RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request",
-                                  CString().Format("Invalid access_type: %s", access_type.c_str()));
+                                  CString().Format("slInvalid access_type: %s", access_type.c_str()));
                     return;
                 }
 
-                CStringList Scopes;
-                Provider.GetScopes(Application, Scopes);
-                ParseString(scope, Scopes, Valid, Invalid);
+                CStringList slScopes;
+                caProvider.GetScopes(sApplication, slScopes);
+                ParseString(scope, slScopes, slValid, slInvalid);
 
-                if (Invalid.Count() > 0) {
+                if (slInvalid.Count() > 0) {
                     RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_scope",
                                   CString().Format("Some requested scopes were invalid: {valid=[%s], invalid=[%s]}",
-                                                   Valid.Text().c_str(), Invalid.Text().c_str()));
+                                                   slValid.Text().c_str(), slInvalid.Text().c_str()));
                     return;
                 }
 
-                ParseString(prompt, Prompt, Valid, Invalid);
+                ParseString(prompt, slPrompt, slValid, slInvalid);
 
-                if (Invalid.Count() > 0) {
+                if (slInvalid.Count() > 0) {
                     RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "unsupported_prompt_type",
                                   CString().Format("Some requested prompt type were invalid: {valid=[%s], invalid=[%s]}",
-                                                   Valid.Text().c_str(), Invalid.Text().c_str()));
+                                                   slValid.Text().c_str(), slInvalid.Text().c_str()));
                     return;
                 }
 
                 oauthLocation = redirect_identifier;
 
-                Search.Clear();
+                slSearch.Clear();
 
-                Search.AddPair("client_id", client_id);
-                Search.AddPair("response_type", response_type);
+                slSearch.AddPair("client_id", client_id);
+                slSearch.AddPair("response_type", response_type);
 
                 if (!redirect_uri.IsEmpty())
-                    Search.AddPair("redirect_uri", CHTTPServer::URLEncode(redirect_uri));
+                    slSearch.AddPair("redirect_uri", CHTTPServer::URLEncode(redirect_uri));
                 if (!access_type.IsEmpty())
-                    Search.AddPair("access_type", access_type);
+                    slSearch.AddPair("access_type", access_type);
                 if (!scope.IsEmpty())
-                    Search.AddPair("scope", CHTTPServer::URLEncode(scope));
+                    slSearch.AddPair("scope", CHTTPServer::URLEncode(scope));
                 if (!prompt.IsEmpty())
-                    Search.AddPair("prompt", CHTTPServer::URLEncode(prompt));
+                    slSearch.AddPair("prompt", CHTTPServer::URLEncode(prompt));
                 if (!state.IsEmpty())
-                    Search.AddPair("state", CHTTPServer::URLEncode(state));
+                    slSearch.AddPair("state", CHTTPServer::URLEncode(state));
 
-                SetSearch(Search, oauthLocation);
+                SetSearch(slSearch, oauthLocation);
 
-            } else if (Action == "code") {
+            } else if (caAction == "code") {
 
                 const auto &error = pRequest->Params["error"];
 
                 if (!error.IsEmpty()) {
                     const auto ErrorCode = StrToIntDef(pRequest->Params["code"].c_str(), CHTTPReply::bad_request);
-                    RedirectError(AConnection, redirect_error, ErrorCode, error, pRequest->Params["error_description"]);
+                    RedirectError(AConnection, redirect_error, (int) ErrorCode, error, pRequest->Params["error_description"]);
                     return;
                 }
 
@@ -1103,25 +1096,25 @@ namespace Apostol {
                 const auto &state = pRequest->Params["state"];
 
                 if (!code.IsEmpty()) {
-                    const auto &providerName = cRouts.Count() == 3 ? cRouts[2].Lower() : "default";
-                    const auto &Provider = Providers[providerName];
+                    const auto &providerName = slRouts.Count() == 3 ? slRouts[2].Lower() : "default";
+                    const auto &caProvider = caProviders[providerName];
 
                     AConnection->Data().Values("provider", providerName);
-                    AConnection->Data().Values("redirect", redirect_callback);
+                    AConnection->Data().Values("redirect", state == "debug" ? redirect_debug : redirect_callback);
                     AConnection->Data().Values("redirect_error", redirect_error);
 
-                    FetchAccessToken(AConnection, Provider, code);
+                    FetchAccessToken(AConnection, caProvider, code);
                 } else {
                     RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request", "Parameter \"code\" not found.");
                 }
 
                 return;
 
-            } else if (Action == "callback") {
+            } else if (caAction == "callback") {
 
                 oauthLocation = redirect_callback;
 
-            } else if (Action == "identifier") {
+            } else if (caAction == "identifier") {
                 DoIdentifier(AConnection);
                 return;
             }
@@ -1140,10 +1133,10 @@ namespace Apostol {
 
             pReply->ContentType = CHTTPReply::json;
 
-            CStringList cRouts;
-            SplitColumns(pRequest->Location.pathname, cRouts, '/');
+            CStringList slRouts;
+            SplitColumns(pRequest->Location.pathname, slRouts, '/');
 
-            if (cRouts.Count() < 2) {
+            if (slRouts.Count() < 2) {
                 ReplyError(AConnection, CHTTPReply::not_found, "invalid_request", "Not found.");
                 return;
             }
@@ -1152,7 +1145,7 @@ namespace Apostol {
             AConnection->Data().Values("path", pRequest->Location.pathname);
 
             try {
-                const auto &caAction = cRouts[1].Lower();
+                const auto &caAction = slRouts[1].Lower();
 
                 if (caAction == "token") {
                     DoToken(AConnection);

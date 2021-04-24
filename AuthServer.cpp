@@ -300,10 +300,7 @@ namespace Apostol {
             const auto& GetSecret = [](const CProvider &Provider, const CString &Application) {
                 const auto &Secret = Provider.Secret(Application);
                 if (Secret.IsEmpty())
-                    throw ExceptionFrm("Not found Secret for \"%s:%s\"",
-                                       Provider.Name.c_str(),
-                                       Application.c_str()
-                    );
+                    throw ExceptionFrm("Not found Secret for \"%s:%s\"", Provider.Name().c_str(), Application.c_str());
                 return Secret;
             };
 
@@ -1165,15 +1162,15 @@ namespace Apostol {
             const auto& URI = Provider.CertURI(PROVIDER_APPLICATION_NAME);
 
             if (URI.IsEmpty()) {
-                Log()->Error(APP_LOG_INFO, 0, _T("Certificate URI in provider \"%s\" is empty."), Provider.Name.c_str());
+                Log()->Error(APP_LOG_INFO, 0, _T("Certificate URI in provider \"%s\" is empty."), Provider.Name().c_str());
                 return;
             }
 
             Log()->Error(APP_LOG_INFO, 0, _T("Trying to fetch public keys from: %s"), URI.c_str());
 
             auto OnRequest = [&Provider](CHTTPClient *Sender, CHTTPRequest *Request) {
-                Provider.KeyStatusTime = Now();
-                Provider.KeyStatus = CProvider::ksFetching;
+                Provider.KeyStatusTime(Now());
+                Provider.KeyStatus(ksFetching);
                 CLocation Location(Provider.CertURI(PROVIDER_APPLICATION_NAME));
                 CHTTPRequest::Prepare(Request, "GET", Location.pathname.c_str());
             };
@@ -1186,14 +1183,14 @@ namespace Apostol {
                     DebugRequest(pConnection->Request());
                     DebugReply(pReply);
 
-                    Provider.KeyStatusTime = Now();
+                    Provider.KeyStatusTime(Now());
 
-                    Provider.Keys.Clear();
-                    Provider.Keys << pReply->Content;
+                    Provider.Keys().Clear();
+                    Provider.Keys() << pReply->Content;
 
-                    Provider.KeyStatus = CProvider::ksSuccess;
+                    Provider.KeyStatus(ksSuccess);
                 } catch (Delphi::Exception::Exception &E) {
-                    Provider.KeyStatus = CProvider::ksFailed;
+                    Provider.KeyStatus(ksFailed);
                     Log()->Error(APP_LOG_ERR, 0, "[Certificate] Message: %s", E.what());
                 }
 
@@ -1205,8 +1202,8 @@ namespace Apostol {
                 auto pConnection = dynamic_cast<CHTTPClientConnection *> (AConnection);
                 auto pClient = dynamic_cast<CHTTPClient *> (pConnection->Client());
 
-                Provider.KeyStatusTime = Now();
-                Provider.KeyStatus = CProvider::ksFailed;
+                Provider.KeyStatusTime(Now());
+                Provider.KeyStatus(ksFailed);
 
                 Log()->Error(APP_LOG_ERR, 0, "[%s:%d] %s", pClient->Host().c_str(), pClient->Port(), E.what());
             };
@@ -1227,7 +1224,7 @@ namespace Apostol {
             for (int i = 0; i < Providers.Count(); i++) {
                 auto& Provider = Providers[i].Value();
                 if (Provider.ApplicationExists(PROVIDER_APPLICATION_NAME)) {
-                    if (Provider.KeyStatus == CProvider::ksUnknown) {
+                    if (Provider.KeyStatus() == ksUnknown) {
                         FetchCerts(Provider);
                     }
                 }
@@ -1240,9 +1237,9 @@ namespace Apostol {
             for (int i = 0; i < Providers.Count(); i++) {
                 auto& Provider = Providers[i].Value();
                 if (Provider.ApplicationExists(PROVIDER_APPLICATION_NAME)) {
-                    if (Provider.KeyStatus != CProvider::ksUnknown) {
-                        Provider.KeyStatusTime = Now();
-                        Provider.KeyStatus = CProvider::ksUnknown;
+                    if (Provider.KeyStatus() != ksUnknown) {
+                        Provider.KeyStatusTime(Now());
+                        Provider.KeyStatus(ksUnknown);
                     }
                 }
             }

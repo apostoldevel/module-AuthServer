@@ -955,6 +955,7 @@ namespace Apostol {
             const auto &siteConfig = GetSiteConfig(pRequest->Location.Host());
 
             const auto &redirect_identifier = siteConfig["oauth2.identifier"];
+            const auto &redirect_secret = siteConfig["oauth2.secret"];
             const auto &redirect_callback = siteConfig["oauth2.callback"];
             const auto &redirect_error = siteConfig["oauth2.error"];
             const auto &redirect_debug = siteConfig["oauth2.debug"];
@@ -976,6 +977,7 @@ namespace Apostol {
             CStringList Prompt;
             Prompt.Add("none");
             Prompt.Add("signin");
+            Prompt.Add("secret");
             Prompt.Add("consent");
             Prompt.Add("select_account");
 
@@ -1054,7 +1056,7 @@ namespace Apostol {
                     return;
                 }
 
-                oauthLocation = redirect_identifier;
+                oauthLocation = prompt == "secret" ? redirect_secret : redirect_identifier;
 
                 Search.Clear();
 

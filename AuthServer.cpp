@@ -695,14 +695,17 @@ namespace Apostol {
                     }
 
                     const auto &agent = GetUserAgent(AConnection);
+                    const auto &protocol = GetProtocol(AConnection);
                     const auto &host = GetRealIP(AConnection);
+                    const auto &host_name = GetHost(AConnection);
 
                     CStringList SQL;
 
-                    SQL.Add(CString().Format("SELECT * FROM daemon.login(%s, %s, %s);",
+                    SQL.Add(CString().Format("SELECT * FROM daemon.login(%s, %s, %s, %s);",
                                              PQQuoteLiteral(Authorization.Token).c_str(),
                                              PQQuoteLiteral(agent).c_str(),
-                                             PQQuoteLiteral(host).c_str()
+                                             PQQuoteLiteral(host).c_str(),
+                                             PQQuoteLiteral(CString().Format("%s://%s", protocol.c_str(), host_name.c_str())).c_str()
                     ));
 
                     AConnection->Data().Values("authorized", "false");

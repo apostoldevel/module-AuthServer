@@ -483,7 +483,7 @@ namespace Apostol {
             }
 
             CAuthorization Authorization;
-            if (CheckAuthorizationData(pRequest, Authorization)) {
+            if (CheckAuthorization(AConnection, Authorization)) {
                 if (Authorization.Schema == CAuthorization::asBearer) {
                     CStringList SQL;
 
@@ -500,9 +500,9 @@ namespace Apostol {
 
                     return;
                 }
-            }
 
-            ReplyError(AConnection, CHTTPReply::unauthorized, "unauthorized", "Unauthorized.");
+                ReplyError(AConnection, CHTTPReply::unauthorized, "unauthorized", "Unauthorized.");
+            }
         }
         //--------------------------------------------------------------------------------------------------------------
 

@@ -613,9 +613,14 @@ namespace Apostol {
                 }
 
                 if (Authorization.Username.IsEmpty()) {
-                    ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
-                               CString().Format(value_error, "client_id"));
-                    return;
+                    if (grant_type != "password") {
+                        ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
+                                   CString().Format(value_error, "client_id"));
+                        return;
+                    }
+
+                    const auto &provider = providers.DefaultValue();
+                    Authorization.Username = provider.ClientId(WEB_APPLICATION_NAME);
                 }
 
                 if (Authorization.Password.IsEmpty()) {

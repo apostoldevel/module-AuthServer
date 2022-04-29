@@ -96,7 +96,7 @@ namespace Apostol {
 
             bool CheckAuthorization(CHTTPServerConnection *AConnection, CAuthorization &Authorization);
 
-            void Heartbeat() override;
+            void Heartbeat(CDateTime DateTime) override;
 
             bool Enabled() override;
 

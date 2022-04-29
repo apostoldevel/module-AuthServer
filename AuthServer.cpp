@@ -1251,11 +1251,9 @@ namespace Apostol {
         }
         //--------------------------------------------------------------------------------------------------------------
 
-        void CAuthServer::Heartbeat() {
-            auto now = Now();
-
-            if ((now >= m_FixedDate)) {
-                m_FixedDate = now + (CDateTime) 30 / MinsPerDay; // 30 min
+        void CAuthServer::Heartbeat(CDateTime DateTime) {
+            if ((DateTime >= m_FixedDate)) {
+                m_FixedDate = DateTime + (CDateTime) 30 / MinsPerDay; // 30 min
 
                 CheckProviders();
                 FetchProviders();

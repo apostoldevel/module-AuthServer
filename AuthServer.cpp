@@ -925,6 +925,7 @@ namespace Apostol {
                 pClient->OnExecute(OnReplyToken);
                 pClient->OnException(OnException);
 
+                pClient->AutoFree(true);
                 pClient->Active(true);
             } else {
                 RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request", "Parameter \"token_uri\" not found in provider configuration.");
@@ -1220,6 +1221,7 @@ namespace Apostol {
             pClient->OnExecute(OnExecute);
             pClient->OnException(OnException);
 
+            pClient->AutoFree(true);
             pClient->Active(true);
         }
         //--------------------------------------------------------------------------------------------------------------

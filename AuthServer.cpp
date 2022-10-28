@@ -560,6 +560,10 @@ namespace Apostol {
                     status = ErrorCodeToStatus(CheckOAuth2Error(Json, error, errorDescription));
 
                     if (status == CHTTPReply::ok) {
+                        const auto &session = Json[_T("session")].AsString();
+                        if (!session.IsEmpty())
+                            pReply->SetCookie(_T("SID"), session.c_str(), _T("/"), 60 * SecsPerDay);
+
                         AConnection->SendReply(status, nullptr, true);
                     } else {
                         ReplyError(AConnection, status, error, errorDescription);

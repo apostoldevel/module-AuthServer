@@ -1191,13 +1191,18 @@ namespace Apostol {
                     DebugRequest(pConnection->Request());
                     DebugReply(pReply);
 
-                    Provider.KeyStatusTime(Now());
-
-                    Provider.Keys().Clear();
-                    Provider.Keys() << pReply->Content;
-
-                    Provider.KeyStatus(ksSuccess);
+                    if (pReply->Status == CHTTPReply::ok) {
+                        Provider.Keys().Clear();
+                        Provider.Keys() << pReply->Content;
+                        Provider.KeyStatusTime(Now());
+                        Provider.KeyStatus(ksSuccess);
+                    } else {
+                        Provider.KeyStatusTime(Now());
+                        Provider.KeyStatus(ksFailed);
+                        Log()->Error(APP_LOG_ERR, 0, "[Certificate] Status: %d (%s)", pReply->Status, pReply->StatusText.c_str());
+                    }
                 } catch (Delphi::Exception::Exception &E) {
+                    Provider.KeyStatusTime(Now());
                     Provider.KeyStatus(ksFailed);
                     Log()->Error(APP_LOG_ERR, 0, "[Certificate] Message: %s", E.what());
                 }

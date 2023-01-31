@@ -60,7 +60,7 @@ namespace Apostol {
 
             static void ParseString(const CString &String, const CStringList &Strings, CStringList &Valid, CStringList &Invalid);
 
-            static bool CheckAuthorizationData(CHTTPRequest *ARequest, CAuthorization &Authorization);
+            static bool CheckAuthorizationData(const CHTTPRequest &Request, CAuthorization &Authorization);
 
             static int CheckOAuth2Error(const CJSON &Json, CString &Error, CString &ErrorDescription);
             static int CheckError(const CJSON &Json, CString &ErrorMessage, bool RaiseIfError = false);

@@ -669,10 +669,10 @@ namespace Apostol {
 
             CStringList SQL;
 
-            SQL.Add(CString().Format("SELECT * FROM daemon.token(%s, %s, '%s'::jsonb, %s, %s);",
+            SQL.Add(CString().Format("SELECT * FROM daemon.token(%s, %s, %s::jsonb, %s, %s);",
                                      PQQuoteLiteral(Authorization.Username).c_str(),
                                      PQQuoteLiteral(Authorization.Password).c_str(),
-                                     Json.ToString().c_str(),
+                                     PQQuoteLiteral(Json.ToString()).c_str(),
                                      PQQuoteLiteral(agent).c_str(),
                                      PQQuoteLiteral(host).c_str()
             ));

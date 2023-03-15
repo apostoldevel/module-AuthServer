@@ -2,7 +2,7 @@
 
 Program name:
 
-  Apostol Web Service
+  Apostol CRM
 
 Module Name:
 

@@ -439,34 +439,41 @@ namespace Apostol {
 
         void CAuthServer::DoIdentifier(CHTTPServerConnection *AConnection) {
 
-            auto OnExecuted = [AConnection](CPQPollQuery *APollQuery) {
+            auto OnExecuted = [](CPQPollQuery *APollQuery) {
 
-                auto &Reply = AConnection->Reply();
-                auto pResult = APollQuery->Results(0);
+                auto pConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->Binding());
 
-                CString errorMessage;
-                CHTTPReply::CStatusType status = CHTTPReply::internal_server_error;
+                if (pConnection != nullptr && !pConnection->ClosedGracefully()) {
+                    auto &Reply = pConnection->Reply();
+                    auto pResult = APollQuery->Results(0);
 
-                try {
-                    if (pResult->ExecStatus() != PGRES_TUPLES_OK)
-                        throw Delphi::Exception::EDBError(pResult->GetErrorMessage());
+                    CString errorMessage;
+                    CHTTPReply::CStatusType status = CHTTPReply::internal_server_error;
 
-                    Reply.ContentType = CHTTPReply::json;
-                    Reply.Content = pResult->GetValue(0, 0);
+                    try {
+                        if (pResult->ExecStatus() != PGRES_TUPLES_OK)
+                            throw Delphi::Exception::EDBError(pResult->GetErrorMessage());
 
-                    const CJSON Payload(Reply.Content);
-                    status = ErrorCodeToStatus(CheckError(Payload, errorMessage));
-                } catch (Delphi::Exception::Exception &E) {
-                    Reply.Content.Clear();
-                    ExceptionToJson(status, E, Reply.Content);
-                    Log()->Error(APP_LOG_ERR, 0, "%s", E.what());
+                        Reply.ContentType = CHTTPReply::json;
+                        Reply.Content = pResult->GetValue(0, 0);
+
+                        const CJSON Payload(Reply.Content);
+                        status = ErrorCodeToStatus(CheckError(Payload, errorMessage));
+                    } catch (Delphi::Exception::Exception &E) {
+                        Reply.Content.Clear();
+                        ExceptionToJson(status, E, Reply.Content);
+                        Log()->Error(APP_LOG_ERR, 0, "%s", E.what());
+                    }
+
+                    pConnection->SendReply(status, nullptr, true);
                 }
-
-                AConnection->SendReply(status, nullptr, true);
             };
 
-            auto OnException = [AConnection](CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
-                ReplyError(AConnection, CHTTPReply::internal_server_error, "server_error", E.what());
+            auto OnException = [](CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
+                auto pConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->Binding());
+                if (pConnection != nullptr && !pConnection->ClosedGracefully()) {
+                    ReplyError(pConnection, CHTTPReply::internal_server_error, "server_error", E.what());
+                }
             };
 
             const auto &caRequest = AConnection->Request();
@@ -492,7 +499,7 @@ namespace Apostol {
                     ));
 
                     try {
-                        ExecSQL(SQL, nullptr, OnExecuted, OnException);
+                        ExecSQL(SQL, AConnection, OnExecuted, OnException);
                     } catch (Delphi::Exception::Exception &E) {
                         ReplyError(AConnection, CHTTPReply::service_unavailable, "temporarily_unavailable", "Temporarily unavailable.");
                     }
@@ -541,41 +548,47 @@ namespace Apostol {
 
         void CAuthServer::DoToken(CHTTPServerConnection *AConnection) {
 
-            auto OnExecuted = [AConnection](CPQPollQuery *APollQuery) {
+            auto OnExecuted = [](CPQPollQuery *APollQuery) {
+                auto pConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->Binding());
 
-                auto &Reply = AConnection->Reply();
-                auto pResult = APollQuery->Results(0);
+                if (pConnection != nullptr && !pConnection->ClosedGracefully()) {
+                    auto &Reply = pConnection->Reply();
+                    auto pResult = APollQuery->Results(0);
 
-                CString error;
-                CString errorDescription;
+                    CString error;
+                    CString errorDescription;
 
-                CHTTPReply::CStatusType status;
+                    CHTTPReply::CStatusType status;
 
-                try {
-                    if (pResult->ExecStatus() != PGRES_TUPLES_OK)
-                        throw Delphi::Exception::EDBError(pResult->GetErrorMessage());
+                    try {
+                        if (pResult->ExecStatus() != PGRES_TUPLES_OK)
+                            throw Delphi::Exception::EDBError(pResult->GetErrorMessage());
 
-                    PQResultToJson(pResult, Reply.Content);
+                        PQResultToJson(pResult, Reply.Content);
 
-                    const CJSON Json(Reply.Content);
-                    status = ErrorCodeToStatus(CheckOAuth2Error(Json, error, errorDescription));
+                        const CJSON Json(Reply.Content);
+                        status = ErrorCodeToStatus(CheckOAuth2Error(Json, error, errorDescription));
 
-                    if (status == CHTTPReply::ok) {
-                        const auto &session = Json[_T("session")].AsString();
-                        if (!session.IsEmpty())
-                            Reply.SetCookie(_T("SID"), session.c_str(), _T("/"), 60 * SecsPerDay);
+                        if (status == CHTTPReply::ok) {
+                            const auto &session = Json[_T("session")].AsString();
+                            if (!session.IsEmpty())
+                                Reply.SetCookie(_T("SID"), session.c_str(), _T("/"), 60 * SecsPerDay);
 
-                        AConnection->SendReply(status, nullptr, true);
-                    } else {
-                        ReplyError(AConnection, status, error, errorDescription);
+                            pConnection->SendReply(status, nullptr, true);
+                        } else {
+                            ReplyError(pConnection, status, error, errorDescription);
+                        }
+                    } catch (Delphi::Exception::Exception &E) {
+                        ReplyError(pConnection, CHTTPReply::internal_server_error, "server_error", E.what());
                     }
-                } catch (Delphi::Exception::Exception &E) {
-                    ReplyError(AConnection, CHTTPReply::internal_server_error, "server_error", E.what());
                 }
             };
 
-            auto OnException = [AConnection](CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
-                ReplyError(AConnection, CHTTPReply::internal_server_error, "server_error", E.what());
+            auto OnException = [](CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
+                auto pConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->Binding());
+                if (pConnection != nullptr && !pConnection->ClosedGracefully()) {
+                    ReplyError(pConnection, CHTTPReply::internal_server_error, "server_error", E.what());
+                }
             };
 
             LPCTSTR js_origin_error = _T("The JavaScript origin in the request, %s, does not match the ones authorized for the OAuth client.");

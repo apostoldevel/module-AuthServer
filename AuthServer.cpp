@@ -552,6 +552,7 @@ namespace Apostol {
                 auto pConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->Binding());
 
                 if (pConnection != nullptr && !pConnection->ClosedGracefully()) {
+                    const auto &Request = pConnection->Request();
                     auto &Reply = pConnection->Reply();
                     auto pResult = APollQuery->Results(0);
 
@@ -570,7 +571,17 @@ namespace Apostol {
                         status = ErrorCodeToStatus(CheckOAuth2Error(Json, error, errorDescription));
 
                         if (status == CHTTPReply::ok) {
+                            const auto &access_token = Json[_T("access_token")].AsString();
+                            const auto &refresh_token = Json[_T("refresh_token")].AsString();
                             const auto &session = Json[_T("session")].AsString();
+                            const auto &domain = Request.Headers["Host"];
+
+                            if (!access_token.IsEmpty())
+                                Reply.SetCookie(_T("__Secure-AT"), access_token.c_str(), _T("/"), 60 * SecsPerDay, true, _T("None"), true, domain.c_str());
+
+                            if (!refresh_token.IsEmpty())
+                                Reply.SetCookie(_T("__Secure-RT"), refresh_token.c_str(), _T("/"), 60 * SecsPerDay, true, _T("None"), true, domain.c_str());
+
                             if (!session.IsEmpty())
                                 Reply.SetCookie(_T("SID"), session.c_str(), _T("/"), 60 * SecsPerDay);
 
@@ -768,10 +779,10 @@ namespace Apostol {
             const auto &domain = Request.Headers["Host"];
 
             if (!access_token.IsEmpty())
-                Reply.SetCookie(_T("__Secure-AT"), access_token.c_str(), nullptr, 0, true, nullptr, true, domain.c_str());
+                Reply.SetCookie(_T("__Secure-AT"), access_token.c_str(), _T("/"), 60 * SecsPerDay, true, _T("None"), true, domain.c_str());
 
             if (!refresh_token.IsEmpty())
-                Reply.SetCookie(_T("__Secure-RT"), refresh_token.c_str(), nullptr, 0, true, nullptr, true, domain.c_str());
+                Reply.SetCookie(_T("__Secure-RT"), refresh_token.c_str(), _T("/"), 60 * SecsPerDay, true, _T("None"), true, domain.c_str());
 
             if (!session.IsEmpty())
                 Reply.SetCookie(_T("SID"), session.c_str(), _T("/"), 60 * SecsPerDay);

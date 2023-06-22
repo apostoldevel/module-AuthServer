@@ -756,21 +756,28 @@ namespace Apostol {
 
         void CAuthServer::SetAuthorizationData(CHTTPServerConnection *AConnection, const CJSON &Payload) {
 
+            auto &Request = AConnection->Request();
             auto &Reply = AConnection->Reply();
 
+            const auto &access_token = Payload[_T("access_token")].AsString();
+            const auto &refresh_token = Payload[_T("refresh_token")].AsString();
+            const auto &token_type = Payload[_T("token_type")].AsString();
+            const auto &expires_in = Payload[_T("expires_in")].AsString();
+            const auto &state = Payload[_T("state")].AsString();
             const auto &session = Payload[_T("session")].AsString();
+            const auto &domain = Request.Headers["Host"];
+
+            if (!access_token.IsEmpty())
+                Reply.SetCookie(_T("__Secure-AT"), access_token.c_str(), nullptr, 0, true, nullptr, true, domain.c_str());
+
+            if (!refresh_token.IsEmpty())
+                Reply.SetCookie(_T("__Secure-RT"), refresh_token.c_str(), nullptr, 0, true, nullptr, true, domain.c_str());
+
             if (!session.IsEmpty())
                 Reply.SetCookie(_T("SID"), session.c_str(), _T("/"), 60 * SecsPerDay);
 
             CString Redirect = AConnection->Data()["redirect"];
             if (!Redirect.IsEmpty()) {
-
-                const auto &access_token = Payload[_T("access_token")].AsString();
-                const auto &refresh_token = Payload[_T("refresh_token")].AsString();
-                const auto &token_type = Payload[_T("token_type")].AsString();
-                const auto &expires_in = Payload[_T("expires_in")].AsString();
-                const auto &state = Payload[_T("state")].AsString();
-
                 Redirect << "#access_token=" << access_token;
 
                 if (!refresh_token.IsEmpty())

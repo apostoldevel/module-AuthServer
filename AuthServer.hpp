@@ -71,6 +71,8 @@ namespace Apostol {
             static void ReplyError(CHTTPServerConnection *AConnection, int ErrorCode, const CString &Error, const CString &Message);
 
             static void SetAuthorizationData(CHTTPServerConnection *AConnection, const CJSON &Payload);
+            static void SetSecure(CHTTPReply &Reply, const CString &AccessToken, const CString &RefreshToken, const CString &Session, const CString &Domain);
+
             void Login(CHTTPServerConnection *AConnection, const CJSON &Token);
 
         protected:

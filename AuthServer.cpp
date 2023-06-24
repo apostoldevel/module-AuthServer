@@ -574,16 +574,8 @@ namespace Apostol {
                             const auto &access_token = Json[_T("access_token")].AsString();
                             const auto &refresh_token = Json[_T("refresh_token")].AsString();
                             const auto &session = Json[_T("session")].AsString();
-                            const auto &domain = Request.Headers["Host"];
 
-                            if (!access_token.IsEmpty())
-                                Reply.SetCookie(_T("__Secure-AT"), access_token.c_str(), _T("/"), 60 * SecsPerDay, true, _T("None"), true, domain.c_str());
-
-                            if (!refresh_token.IsEmpty())
-                                Reply.SetCookie(_T("__Secure-RT"), refresh_token.c_str(), _T("/"), 60 * SecsPerDay, true, _T("None"), true, domain.c_str());
-
-                            if (!session.IsEmpty())
-                                Reply.SetCookie(_T("SID"), session.c_str(), _T("/"), 60 * SecsPerDay);
+                            SetSecure(Reply, access_token, refresh_token, session, Request.Location.hostname);
 
                             pConnection->SendReply(status, nullptr, true);
                         } else {
@@ -765,6 +757,18 @@ namespace Apostol {
         }
         //--------------------------------------------------------------------------------------------------------------
 
+        void CAuthServer::SetSecure(CHTTPReply &Reply, const CString &AccessToken, const CString &RefreshToken, const CString &Session, const CString &Domain) {
+            if (!AccessToken.IsEmpty())
+                Reply.SetCookie(_T("__Secure-AT"), AccessToken.c_str(), _T("/"), 60 * SecsPerDay, true, _T("None"), true, Domain.c_str());
+
+            if (!RefreshToken.IsEmpty())
+                Reply.SetCookie(_T("__Secure-RT"), RefreshToken.c_str(), _T("/"), 60 * SecsPerDay, true, _T("None"), true, Domain.c_str());
+
+            if (!Session.IsEmpty())
+                Reply.SetCookie(_T("SID"), Session.c_str(), _T("/"), 60 * SecsPerDay);
+        }
+        //--------------------------------------------------------------------------------------------------------------
+
         void CAuthServer::SetAuthorizationData(CHTTPServerConnection *AConnection, const CJSON &Payload) {
 
             auto &Request = AConnection->Request();
@@ -776,16 +780,8 @@ namespace Apostol {
             const auto &expires_in = Payload[_T("expires_in")].AsString();
             const auto &state = Payload[_T("state")].AsString();
             const auto &session = Payload[_T("session")].AsString();
-            const auto &domain = Request.Headers["Host"];
 
-            if (!access_token.IsEmpty())
-                Reply.SetCookie(_T("__Secure-AT"), access_token.c_str(), _T("/"), 60 * SecsPerDay, true, _T("None"), true, domain.c_str());
-
-            if (!refresh_token.IsEmpty())
-                Reply.SetCookie(_T("__Secure-RT"), refresh_token.c_str(), _T("/"), 60 * SecsPerDay, true, _T("None"), true, domain.c_str());
-
-            if (!session.IsEmpty())
-                Reply.SetCookie(_T("SID"), session.c_str(), _T("/"), 60 * SecsPerDay);
+            SetSecure(Reply, access_token, refresh_token, session, Request.Location.hostname);
 
             CString Redirect = AConnection->Data()["redirect"];
             if (!Redirect.IsEmpty()) {

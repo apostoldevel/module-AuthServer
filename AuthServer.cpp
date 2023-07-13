@@ -915,7 +915,7 @@ namespace Apostol {
                 return true;
             };
 
-            auto OnException = [AConnection](CTCPConnection *Sender, const Delphi::Exception::Exception &E) {
+            auto OnException = [this, AConnection](CTCPConnection *Sender, const Delphi::Exception::Exception &E) {
 
                 auto pConnection = dynamic_cast<CHTTPClientConnection *> (Sender);
                 auto pClient = dynamic_cast<CHTTPClient *> (pConnection->Client());

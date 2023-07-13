@@ -53,7 +53,7 @@ namespace Apostol {
 
             static void AfterQuery(CHTTPServerConnection *AConnection, const CString &Path, const CJSON &Payload);
 
-            static void QueryException(CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E);
+            void QueryException(CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E);
 
             CString CreateToken(const CCleanToken& CleanToken);
             CString VerifyToken(const CString &Token);
@@ -67,7 +67,7 @@ namespace Apostol {
 
             static CHTTPReply::CStatusType ErrorCodeToStatus(int ErrorCode);
 
-            static void RedirectError(CHTTPServerConnection *AConnection, const CString &Location, int ErrorCode, const CString &Error, const CString &Message);
+            void RedirectError(CHTTPServerConnection *AConnection, const CString &Location, int ErrorCode, const CString &Error, const CString &Message);
             static void ReplyError(CHTTPServerConnection *AConnection, int ErrorCode, const CString &Error, const CString &Message);
 
             static void SetAuthorizationData(CHTTPServerConnection *AConnection, const CJSON &Payload);

@@ -1117,29 +1117,30 @@ namespace Apostol {
 
             } else if (action == "code") {
 
-                const auto &error = caRequest.Params["error"];
+                const auto &code = caRequest.Params["code"];
 
-                if (!error.IsEmpty()) {
-                    const auto ErrorCode = StrToIntDef(caRequest.Params["code"].c_str(), CHTTPReply::bad_request);
-                    RedirectError(AConnection, redirect_error, (int) ErrorCode, error, caRequest.Params["error_description"]);
+                if (code.IsEmpty()) {
+                    RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request", "Parameter \"code\" not found.");
                     return;
                 }
 
-                const auto &code = caRequest.Params["code"];
-                const auto &state = caRequest.Params["state"];
+                const auto &error = caRequest.Params["error"];
 
-                if (!code.IsEmpty()) {
-                    const auto &providerName = Routs.Count() == 3 ? Routs[2].Lower() : "default";
-                    const auto &provider = providers[providerName];
-
-                    AConnection->Data().Values("provider", providerName);
-                    AConnection->Data().Values("redirect", state == "debug" ? redirect_debug : redirect_callback);
-                    AConnection->Data().Values("redirect_error", redirect_error);
-
-                    FetchAccessToken(AConnection, provider, code);
-                } else {
-                    RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request", "Parameter \"code\" not found.");
+                if (!error.IsEmpty()) {
+                    const auto errorCode = StrToIntDef(code.c_str(), CHTTPReply::bad_request);
+                    RedirectError(AConnection, redirect_error, (int) errorCode, error, caRequest.Params["error_description"]);
+                    return;
                 }
+
+                const auto &state = caRequest.Params["state"];
+                const auto &providerName = Routs.Count() == 3 ? Routs[2].Lower() : "default";
+                const auto &provider = providers[providerName];
+
+                AConnection->Data().Values("provider", providerName);
+                AConnection->Data().Values("redirect", state == "debug" ? redirect_debug : redirect_callback);
+                AConnection->Data().Values("redirect_error", redirect_error);
+
+                FetchAccessToken(AConnection, provider, code);
 
                 return;
 

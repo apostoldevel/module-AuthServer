@@ -8,12 +8,55 @@
 Описание
 -
 
-* Сервер авторизации разработан по стандартам:
-  - [RFC 6749](https://tools.ietf.org/html/rfc6749): The OAuth 2.0 Authorization Framework;
-  - OpenID Connect;
-  - [RFC 7519](https://tools.ietf.org/html/rfc7519): JSON Web Token (JWT).
+**Сервер авторизации** — C++-модуль сервера OAuth 2.0 для фреймворка [Апостол](https://github.com/apostoldevel/apostol). Работает внутри рабочих процессов Апостола и обрабатывает все запросы, путь которых начинается с `/oauth2/`.
 
-* Позволяет упростить доступ пользователей к приложениям, разрешив для этого использование существующей учётной записи социальной сети или, например, учётной записи пользователя в Google или в ЕСИА (Госуслуги).
+Ключевые характеристики:
+
+* Написан на C++14, использует асинхронную неблокирующую модель ввода/вывода на основе API **epoll**.
+* Реализует [RFC 6749](https://tools.ietf.org/html/rfc6749) (OAuth 2.0), OpenID Connect и [RFC 7519](https://tools.ietf.org/html/rfc7519) (JWT). Поддерживаемые типы разрешений: Authorization Code, Implicit, Resource Owner Password Credentials, Client Credentials, Token Exchange ([RFC 8693](https://tools.ietf.org/html/rfc8693)) и JWT Bearer.
+* Вся логика выдачи токенов и управления сессиями выполняется в базе данных (`daemon.token`, `daemon.login`). Слой C++ занимается только HTTP-транспортом, валидацией параметров, криптографическими операциями с JWT и управлением cookies.
+* Верификация JWT выполняется локально с помощью библиотеки `jwt-cpp` — поддерживаются все 12 алгоритмов (HS256/384/512, RS256/384/512, ES256/384/512, PS256/384/512) без обращения к базе данных.
+* Поддерживает внешних провайдеров идентификации (Google, ЕСИА) через стандартные JWKS-эндпоинты: открытые ключи загружаются и кэшируются в памяти.
+* Упрощает вход пользователей, позволяя авторизоваться через существующую учётную запись (например, Google) без отдельной регистрации.
+
+### Как модуль встраивается в Апостол
+
+`CAuthServer` регистрируется как обработчик всех запросов, путь которых начинается с `/oauth2/` (см. `CheckLocation`). Принимает методы `GET`, `POST` и `OPTIONS`; все остальные HTTP-методы возвращают `405 Method Not Allowed`.
+
+**Маршрутизация GET /oauth2/{action}:**
+
+| Действие | Что делает C++ | Вызов в БД |
+|----------|---------------|------------|
+| `authorize` / `auth` | Валидирует `client_id`, `redirect_uri`, `response_type`, `scope`, `access_type`, `prompt` по конфигурации провайдера в памяти. Перенаправляет на страницу входа из `sites.conf` (`oauth2.identifier` или `oauth2.secret`). | Нет |
+| `code` | Получает код авторизации из редиректа внешнего провайдера. Для внешних провайдеров (например, Google): выполняет прямой HTTP-вызов к `token_uri` провайдера для обмена кода на токен, затем верифицирует полученный JWT. | `daemon.login(token, agent, host, origin)` |
+| `callback` | Перенаправляет на `oauth2.callback` из `sites.conf`. | Нет |
+| `identifier` | Извлекает `value` из тела запроса, проверяет Bearer-токен. | `daemon.identifier(token, value)` |
+
+**Маршрутизация POST /oauth2/{action}:**
+
+| Действие | Что делает C++ | Вызов в БД |
+|----------|---------------|------------|
+| `token` | Разбирает `client_id`/`client_secret` из тела запроса или заголовка `Authorization: Basic`. Для приложений `web`/`service`: проверяет `redirect_uri` и `javascript_origins` по конфигурации провайдера. Передаёт полный payload в БД как JSONB. | `daemon.token(client_id, client_secret, payload::jsonb, agent, host)` |
+| `identifier` | Аналогично GET identifier. | `daemon.identifier(token, value)` |
+
+**Пошаговый процесс обработки запроса `POST /oauth2/token`:**
+
+1. Цикл событий рабочего процесса (epoll) принимает соединение и читает HTTP-запрос.
+2. `CAuthServer` разбирает тип grant и учётные данные клиента из тела запроса или заголовка `Authorization: Basic`. Для гранта `password` без явного `client_id` автоматически используется клиент веб-приложения по умолчанию.
+3. Для приложений `web` и `service`: C++ проверяет `redirect_uri` и `javascript_origins` в процессе — по конфигурации провайдера, загруженной из `conf/oauth2/`, без обращения к БД.
+4. Выполняет асинхронный вызов `daemon.token(client_id, client_secret, payload, agent, host)`. База данных берёт на себя всю логику grant-типов: генерацию токенов, создание сессий, refresh-токены, обмен токенами и валидацию внешних JWT.
+5. В случае успеха: C++ устанавливает три cookie (`__Secure-AT`, `__Secure-RT` с TTL 60 дней и `SameSite=None; Secure`; сессионный cookie `SID`) и возвращает клиенту JSON-ответ с токеном.
+
+**Работа с JWT в C++:**
+
+Модуль использует библиотеку `jwt-cpp` для всех криптографических операций:
+
+* **Верификация** — поддерживаются все 12 алгоритмов. Для HMAC-алгоритмов (HS256/384/512) секрет берётся из конфигурации провайдера. Для асимметричных алгоритмов (RS*/ES*/PS*) открытый ключ ищется по `kid` в кэше JWKS в памяти. После асимметричной верификации токен переподписывается алгоритмом HS256 для единообразной внутренней обработки.
+* **Создание** — выпускает короткоживущий HS256-токен (TTL 1 час), подписанный секретом приложения `web`, с издателем и аудиторией из конфигурации провайдера по умолчанию.
+
+**Heartbeat (запускается каждые 30 минут):**
+
+Метод `Heartbeat()` сбрасывает статусы ключей всех провайдеров в `ksUnknown`, затем загружает актуальные публичные ключи JWKS/сертификатов с `cert_uri` каждого провайдера через неблокирующий C++ HTTP-клиент. При ошибке загрузки следующая попытка назначается через 5 секунд вместо 30 минут. Кэшированные ключи используются в `VerifyToken()` для верификации подписей RS*/ES*/PS* без обращения к базе данных.
 
 Модуль базы данных
 -
@@ -44,6 +87,161 @@ AuthServer тесно связан с модулями **`oauth2`** и **`admin`
 ```ini
 [module/AuthServer]
 enable=true
+```
+
+Быстрый старт
+-
+
+> Для фронтенд-разработчиков — чтобы получить токен, нужно всего **два возможных запроса**.
+
+Все токены выдаются через один эндпоинт. Заголовок `Authorization: Basic` содержит пару `client_id:client_secret`, закодированную в Base64. Значения `client_id`, `client_secret` и `scope` предоставляет владелец сервера.
+
+---
+
+### 1. Сервисный токен (без пользователя)
+
+Используйте `client_credentials` для бэкенд-интеграций и межсервисных вызовов. Время жизни токена: **24 часа**.
+
+**Запрос:**
+```http
+POST /oauth2/token HTTP/1.1
+Host: YOUR-HOST
+Content-Type: application/x-www-form-urlencoded
+Authorization: Basic <base64(client_id:client_secret)>
+
+grant_type=client_credentials&scope=YOUR-SCOPE&access_type=offline
+```
+
+**Ответ `200 OK`:**
+```json
+{
+  "access_token":  "eyJ...",
+  "refresh_token": "mZfA...",
+  "secret":        "n9RX...",
+  "token_type":    "Bearer",
+  "expires_in":    86400,
+  "session":       "db17c81d..."
+}
+```
+
+---
+
+### 2. Вход пользователя (логин + пароль)
+
+Аутентификация конкретного пользователя. Время жизни токена: **1 час**.
+
+**Запрос:**
+```http
+POST /oauth2/token HTTP/1.1
+Host: YOUR-HOST
+Content-Type: application/x-www-form-urlencoded
+Authorization: Basic <base64(client_id:client_secret)>
+
+grant_type=password&username=USER&password=PASS&scope=YOUR-SCOPE&access_type=offline
+```
+
+**Ответ `200 OK`:**
+```json
+{
+  "access_token":  "eyJ...",
+  "refresh_token": "85Hr...",
+  "secret":        "0NTZ...",
+  "token_type":    "Bearer",
+  "expires_in":    3600,
+  "session":       "ca8db8e7..."
+}
+```
+
+---
+
+Используйте `access_token` как `Bearer`-токен во всех последующих запросах к API:
+
+```
+Authorization: Bearer eyJ...
+```
+
+Сервер также автоматически устанавливает `HttpOnly`-куки (`__Secure-AT`, `__Secure-RT`, `SID`) — используются браузерными клиентами.
+
+> Полная документация: [Аутентификация и авторизация](#аутентификация-и-авторизация)
+
+Аутентификация на основе cookies
+-
+
+> Для разработчиков браузерных SPA — никакого кода для управления токенами.
+
+Сервер реализует паттерн **Token Handler** из коробки. После входа `AuthServer` устанавливает `__Secure-AT` и `__Secure-RT` как `HttpOnly; Secure; SameSite=None` cookies. Все последующие API-запросы отправляют эти cookies автоматически — браузер берёт на себя всё.
+
+### Как это работает
+
+```
+Браузерное SPA
+  └─ fetch('/api/v1/...', { credentials: 'include' })
+       ↓
+  Apostol AppServer
+    1. Читает __Secure-AT из cookie (заголовок Authorization не нужен)
+    2. Проверяет токен — если истёк:
+       a. Вызывает daemon.refresh_token() → новые токены
+       b. Устанавливает новые cookies __Secure-AT, __Secure-RT, SID
+       c. Прозрачно повторяет оригинальный запрос
+    3. Возвращает API-ответ + заголовки Set-Cookie
+       ↓
+Браузер получает данные. Новые cookies установлены автоматически.
+Никаких 401. Никакого ручного refresh. Никакого setTimeout.
+```
+
+### Что должен сделать фронтенд
+
+Добавить `credentials: 'include'` ко всем API-запросам. Это всё.
+
+```javascript
+// Вход
+const res = await fetch('/oauth2/token', {
+  method: 'POST',
+  credentials: 'include',
+  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  body: 'grant_type=password&username=USER&password=PASS&...'
+});
+// Cookies __Secure-AT, __Secure-RT, SID устанавливаются браузером автоматически.
+
+// Все последующие API-вызовы
+const data = await fetch('/api/v1/whoami', { credentials: 'include' });
+// Обновление токена (при необходимости) прозрачно — всегда получаете 200.
+```
+
+### Что делать при 401
+
+`401 Unauthorized` означает, что сессия полностью истекла (оба токена — access и refresh — недействительны). Перенаправьте на страницу входа:
+
+```javascript
+if (response.status === 401) {
+  window.location.href = '/login';
+}
+```
+
+### Чего НЕ нужно делать
+
+| Не делайте | Почему |
+|-----------|--------|
+| Хранить токены в `localStorage` / `sessionStorage` | Уязвимо для XSS; cookies — `HttpOnly`, JS не может их прочитать |
+| Отслеживать `expires_in` и планировать обновление | AppServer обновляет токен прозрачно при каждом просроченном запросе |
+| Писать логику refresh | Уже реализована на стороне сервера |
+| Отправлять заголовок `Authorization: Bearer` | При использовании cookies не нужен (оба режима поддерживаются одновременно) |
+
+### CORS и безопасность
+
+CORS проверяется по allowlist-у origins, загруженному из `conf/oauth2/*.json` (поля `javascript_origins`). Запросы с неизвестных origins не получают `Access-Control-Allow-Credentials: true`, поэтому браузер блокирует отправку cookies из недоверенных сайтов.
+
+Чтобы разрешить origin вашего фронтенда, добавьте его в `javascript_origins` в конфиге провайдера:
+
+```json
+{
+  "web": {
+    "javascript_origins": [
+      "https://your-app.com",
+      "http://localhost:3000"
+    ]
+  }
+}
 ```
 
 Документация
@@ -119,6 +317,7 @@ POST /oauth2/token
 | scope | `scope` | **Рекомендуемый.** Список областей, разделённых пробелами, которые определяют ресурсы, к которым ваше приложение может получить доступ от имени пользователя. |
 | access_type | `access_type` | **Рекомендуемый.** Указывает, может ли ваше приложение обновлять маркеры доступа, когда пользователь отсутствует в браузере. Допустимые значения: `online` (по умолчанию) и `offline`. |
 | state | `state` | **Рекомендуемый.** Набор случайных символов, которые будут возвращены сервером клиенту (используется для защиты от повторных запросов). |
+| prompt | `prompt` | **Необязательный.** Управляет типом отображаемой страницы входа. Допустимые значения: `signin` (по умолчанию), `secret` (страница ввода пароля), `consent`, `select_account`, `none`. При значении `secret` пользователь перенаправляется на страницу ввода пароля (`oauth2.secret` в `sites.conf`), а не на страницу идентификации. |
 
 **Пример запроса:**
 ```http request
@@ -207,7 +406,7 @@ redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Foauth2%2Fcode
 
 ```json
 {
-  "access_token" : "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiIDogImFjY291bnRzLnNoaXAtc2FmZXR5LnJ1IiwgImF1ZCIgOiAid2ViLXNoaXAtc2FmZXR5LnJ1IiwgInN1YiIgOiAiZGZlMDViNzhhNzZiNmFkOGUwZmNiZWYyNzA2NzE3OTNiODZhYTg0OCIsICJpYXQiIDogMTU5MzUzMjExMCwgImV4cCIgOiAxNTkzNTM1NzEwfQ.NorYsi-Ht826HUFCEArVZ60_dEUmYiJYXubnTyweIMg",
+  "access_token" : "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[payload].[signature]",
   "token_type" : "Bearer",
   "expires_in" : 3600,
   "session" : "dfe05b78a76b6ad8e0fcbef270671793b86aa848"
@@ -218,7 +417,7 @@ redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Foauth2%2Fcode
 
 Неявный тип разрешения на авторизацию используется мобильными и веб-приложениями (приложениями, которые работают в веб-браузере — JavaScript), где конфиденциальность секрета клиента не может быть гарантирована. Неявный тип разрешения также основан на перенаправлении пользовательского агента, при этом маркер доступа передаётся пользовательскому агенту для дальнейшей передачи приложению. Это делает маркер доступным пользователю и другим приложениям на устройстве пользователя. При данном типе разрешения не осуществляется аутентификация подлинности приложения, а процесс полагается на URI перенаправления, зарегистрированный в сервере авторизации.
 
-* Неявный тип разрешения не поддерживает маркеры обновления (`refresh_token`) и маркеры пользователя (`id_token`).
+* Маркеры пользователя (`id_token`) не включаются во фрагмент редиректа. Маркеры обновления (`refresh_token`) включаются только если они возвращены базой данных.
 
 **Параметры запроса:**
 
@@ -249,7 +448,7 @@ http://localhost:8080/oauth2/authorize?
 
 **Ответ с маркером доступа:**
 ```
-http://localhost:8080/callback#token_type=Bearer&expires_in=3600&session=dfe05b78a76b6ad8e0fcbef270671793b86aa848&access_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiIDogImFjY291bnRzLnNoaXAtc2FmZXR5LnJ1IiwgImF1ZCIgOiAid2ViLXNoaXAtc2FmZXR5LnJ1IiwgInN1YiIgOiAiZGZlMDViNzhhNzZiNmFkOGUwZmNiZWYyNzA2NzE3OTNiODZhYTg0OCIsICJpYXQiIDogMTU5MzUzMjExMCwgImV4cCIgOiAxNTkzNTM1NzEwfQ.NorYsi-Ht826HUFCEArVZ60_dEUmYiJYXubnTyweIMg
+http://localhost:8080/callback#token_type=Bearer&expires_in=3600&session=dfe05b78a76b6ad8e0fcbef270671793b86aa848&access_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[payload].[signature]
 ```
 
 * В дополнение к параметру `access_token` строка фрагмента также содержит параметр `token_type` (всегда `Bearer`) и параметр `expires_in`, который указывает время жизни маркера в секундах. Если параметр `state` был указан в запросе маркера доступа, его значение также включается в ответ.
@@ -446,8 +645,8 @@ subject_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Ajwt
 
 | Поле | Значение | Описание |
 | --- | :---: | --- |
-| client_id | `client_id` | **Обязательный.** Идентификатор клиента. |
-| client_secret | `client_secret` | **Обязательный.** Секрет клиента. |
+| client_id | `client_id` | **Рекомендуемый.** Идентификатор клиента. Не проверяется на транспортном уровне для данного типа гранта — весь payload передаётся в базу данных без валидации. |
+| client_secret | `client_secret` | **Рекомендуемый.** Секрет клиента. Не проверяется на транспортном уровне для данного типа гранта — весь payload передаётся в базу данных без валидации. |
 | grant_type | urn:ietf:params:oauth:grant-type:jwt-bearer | **Обязательный.** Это поле должно содержать значение `urn:ietf:params:oauth:grant-type:jwt-bearer`. |
 | assertion | `assertion` | **Обязательный.** JWT маркер, выданный другой (внешней) системой. |
 

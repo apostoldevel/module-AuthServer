@@ -8,12 +8,55 @@ Auth Server
 Description
 -
 
-* The authorization server is implemented according to the following standards:
-  - [RFC 6749](https://tools.ietf.org/html/rfc6749): The OAuth 2.0 Authorization Framework;
-  - OpenID Connect;
-  - [RFC 7519](https://tools.ietf.org/html/rfc7519): JSON Web Token (JWT).
+**Auth Server** is a C++ OAuth 2.0 Authorization Server module for the [Apostol](https://github.com/apostoldevel/apostol) framework. It runs inside Apostol worker processes and handles all requests under the `/oauth2/` path prefix.
 
-* Simplifies user access to applications by allowing authentication through an existing social network account or, for example, a Google account or a government identity provider (such as ESIA / Gosuslugi in Russia).
+Key characteristics:
+
+* Written in C++14 using an asynchronous, non-blocking I/O model based on the **epoll** API.
+* Implements [RFC 6749](https://tools.ietf.org/html/rfc6749) (OAuth 2.0), OpenID Connect, and [RFC 7519](https://tools.ietf.org/html/rfc7519) (JWT). Supported grant types: Authorization Code, Implicit, Resource Owner Password Credentials, Client Credentials, Token Exchange ([RFC 8693](https://tools.ietf.org/html/rfc8693)), and JWT Bearer.
+* All token issuance and session management logic runs in the database (`daemon.token`, `daemon.login`). The C++ layer handles only HTTP transport, parameter validation, JWT signature operations, and cookie management.
+* JWT verification is done locally using the `jwt-cpp` library — all 12 algorithms (HS256/384/512, RS256/384/512, ES256/384/512, PS256/384/512) are supported without a database round-trip.
+* Supports external identity providers (Google, ESIA) via standard JWKS certificate endpoints, with public keys fetched and cached in memory.
+* Simplifies user access by allowing sign-in through existing accounts (e.g. Google) without requiring a separate registration step.
+
+### How it fits into Apostol
+
+`CAuthServer` registers itself as the handler for any request whose path starts with `/oauth2/` (see `CheckLocation`). It accepts `GET`, `POST`, and `OPTIONS`; all other HTTP methods return `405 Method Not Allowed`.
+
+**GET /oauth2/{action} routing:**
+
+| Action | What C++ does | Database call |
+|--------|--------------|---------------|
+| `authorize` / `auth` | Validates `client_id`, `redirect_uri`, `response_type`, `scope`, `access_type`, `prompt` against in-memory provider config. Redirects to the login page URL from `sites.conf` (`oauth2.identifier` or `oauth2.secret`). | None |
+| `code` | Receives authorization code from external provider redirect. For external providers (e.g. Google): makes a direct C++ HTTP call to the provider's `token_uri` to exchange the code for a token, then verifies the returned JWT. | `daemon.login(token, agent, host, origin)` |
+| `callback` | Redirects to `oauth2.callback` from `sites.conf`. | None |
+| `identifier` | Extracts `value` from request body, checks Bearer token. | `daemon.identifier(token, value)` |
+
+**POST /oauth2/{action} routing:**
+
+| Action | What C++ does | Database call |
+|--------|--------------|---------------|
+| `token` | Parses `client_id`/`client_secret` from body or `Authorization: Basic` header. For `web`/`service` apps: validates `redirect_uri` and `javascript_origins` against provider config. Calls DB with full payload as JSONB. | `daemon.token(client_id, client_secret, payload::jsonb, agent, host)` |
+| `identifier` | Same as GET identifier. | `daemon.identifier(token, value)` |
+
+**Token endpoint flow (`POST /oauth2/token`) step by step:**
+
+1. The worker's event loop (epoll) accepts the connection and reads the HTTP request.
+2. `CAuthServer` parses the grant type and client credentials from the request body or `Authorization: Basic` header. For the `password` grant without an explicit `client_id`, the default web application client is used automatically.
+3. For `web` and `service` applications: C++ validates `redirect_uri` and `javascript_origins` in-process against the provider configuration loaded from `conf/oauth2/` — no database query needed for these checks.
+4. It calls `daemon.token(client_id, client_secret, payload, agent, host)` asynchronously. The database handles all grant type logic: token generation, session creation, refresh tokens, token exchange, and external JWT validation.
+5. On success: C++ sets three `HttpOnly` cookies (`__Secure-AT`, `__Secure-RT` with 60-day TTL and `SameSite=None; Secure`; `SID` session cookie) and returns the JSON token response to the client.
+
+**JWT handling in C++:**
+
+The module uses the `jwt-cpp` library directly for all cryptographic operations:
+
+* **Verification** — supports all 12 algorithms. For HMAC algorithms (HS256/384/512) the secret is read from the provider config. For asymmetric algorithms (RS*/ES*/PS*) the public key is looked up by `kid` from the in-memory JWKS cache. After asymmetric verification, the token is re-signed with HS256 for uniform internal handling.
+* **Creation** — issues a short-lived HS256 token (1-hour TTL) signed with the `web` application secret, with issuer and audience taken from the default provider config.
+
+**Heartbeat (runs every 30 minutes):**
+
+`Heartbeat()` resets all provider key statuses to `ksUnknown`, then fetches fresh JWKS/certificate public keys from each provider's `cert_uri` via a non-blocking C++ HTTP client. On fetch failure, the next retry is scheduled in 5 seconds instead of 30 minutes. Cached keys are used by `VerifyToken()` to validate RS*/ES*/PS* signatures without a round-trip to the database.
 
 Database module
 -
@@ -44,6 +87,161 @@ Configuration
 ```ini
 [module/AuthServer]
 enable=true
+```
+
+Quick Start
+-
+
+> For frontend developers — getting a token requires exactly **two possible requests**.
+
+All tokens are issued by a single endpoint. The `Authorization: Basic` header carries `client_id:client_secret` encoded in Base64. Your `client_id`, `client_secret`, and `scope` are provided by the server owner.
+
+---
+
+### 1. Service token (no user)
+
+Use `client_credentials` for backend integrations and service-to-service calls. Token lifetime: **24 hours**.
+
+**Request:**
+```http
+POST /oauth2/token HTTP/1.1
+Host: YOUR-HOST
+Content-Type: application/x-www-form-urlencoded
+Authorization: Basic <base64(client_id:client_secret)>
+
+grant_type=client_credentials&scope=YOUR-SCOPE&access_type=offline
+```
+
+**Response `200 OK`:**
+```json
+{
+  "access_token":  "eyJ...",
+  "refresh_token": "mZfA...",
+  "secret":        "n9RX...",
+  "token_type":    "Bearer",
+  "expires_in":    86400,
+  "session":       "db17c81d..."
+}
+```
+
+---
+
+### 2. User login (username + password)
+
+Authenticates a specific user. Token lifetime: **1 hour**.
+
+**Request:**
+```http
+POST /oauth2/token HTTP/1.1
+Host: YOUR-HOST
+Content-Type: application/x-www-form-urlencoded
+Authorization: Basic <base64(client_id:client_secret)>
+
+grant_type=password&username=USER&password=PASS&scope=YOUR-SCOPE&access_type=offline
+```
+
+**Response `200 OK`:**
+```json
+{
+  "access_token":  "eyJ...",
+  "refresh_token": "85Hr...",
+  "secret":        "0NTZ...",
+  "token_type":    "Bearer",
+  "expires_in":    3600,
+  "session":       "ca8db8e7..."
+}
+```
+
+---
+
+Use `access_token` as a `Bearer` token in all subsequent API requests:
+
+```
+Authorization: Bearer eyJ...
+```
+
+The server also sets `HttpOnly` cookies (`__Secure-AT`, `__Secure-RT`, `SID`) — used automatically by browser clients.
+
+> Full reference: [Authentication and Authorization](#authentication-and-authorization)
+
+Cookie-Based Authentication
+-
+
+> For browser SPA developers — zero token management code required.
+
+The server implements the **Token Handler** pattern out of the box. After login, `AuthServer` sets `__Secure-AT` and `__Secure-RT` as `HttpOnly; Secure; SameSite=None` cookies. All subsequent API requests send these cookies automatically — the browser handles everything.
+
+### How it works
+
+```
+Browser SPA
+  └─ fetch('/api/v1/...', { credentials: 'include' })
+       ↓
+  Apostol AppServer
+    1. Reads __Secure-AT from cookie (no Authorization header needed)
+    2. Verifies token — if expired:
+       a. Calls daemon.refresh_token() → new tokens
+       b. Sets new __Secure-AT, __Secure-RT, SID cookies
+       c. Replays the original request transparently
+    3. Returns API response + Set-Cookie headers
+       ↓
+Browser receives data. New cookies set automatically.
+No 401. No manual refresh. No setTimeout.
+```
+
+### What the frontend must do
+
+Add `credentials: 'include'` to every API request. That's it.
+
+```javascript
+// Login
+const res = await fetch('/oauth2/token', {
+  method: 'POST',
+  credentials: 'include',
+  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  body: 'grant_type=password&username=USER&password=PASS&...'
+});
+// Cookies __Secure-AT, __Secure-RT, SID are set automatically by the browser.
+
+// All subsequent API calls
+const data = await fetch('/api/v1/whoami', { credentials: 'include' });
+// Token refresh (if needed) is transparent — you always get a 200.
+```
+
+### What to do on 401
+
+A `401 Unauthorized` means the session has completely expired (both access and refresh tokens are invalid). Redirect to login:
+
+```javascript
+if (response.status === 401) {
+  window.location.href = '/login';
+}
+```
+
+### What NOT to do
+
+| Do NOT | Why |
+|--------|-----|
+| Store tokens in `localStorage` / `sessionStorage` | Vulnerable to XSS; cookies are `HttpOnly` — JS cannot read them |
+| Track `expires_in` and schedule a refresh | AppServer refreshes transparently on every expired request |
+| Write refresh logic | Already handled server-side |
+| Send `Authorization: Bearer` header | Not needed when using cookies (both modes are supported simultaneously) |
+
+### CORS and security
+
+CORS is enforced by an origin allowlist loaded from `conf/oauth2/*.json` (`javascript_origins` fields). Requests from unknown origins do not receive `Access-Control-Allow-Credentials: true`, so the browser blocks cross-origin cookie sending from untrusted sites.
+
+To allow your frontend origin, add it to `javascript_origins` in your provider config:
+
+```json
+{
+  "web": {
+    "javascript_origins": [
+      "https://your-app.com",
+      "http://localhost:3000"
+    ]
+  }
+}
 ```
 
 Documentation
@@ -119,6 +317,7 @@ Authorization Code is one of the most commonly used grant types because it is we
 | scope | `scope` | **Recommended.** A space-separated list of scopes that define the resources your application can access on behalf of the user. |
 | access_type | `access_type` | **Recommended.** Specifies whether your application can refresh access tokens when the user is not present in the browser. Accepted values: `online` (default) and `offline`. |
 | state | `state` | **Recommended.** A set of random characters that will be returned by the server to the client (used to protect against replay attacks). |
+| prompt | `prompt` | **Optional.** Controls the login page shown to the user. Accepted values: `signin` (default), `secret` (password page), `consent`, `select_account`, `none`. When `secret` is specified, the user is redirected to the password-entry page (`oauth2.secret` in `sites.conf`) instead of the identifier page. |
 
 **Example request:**
 ```http request
@@ -207,7 +406,7 @@ redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Foauth2%2Fcode
 
 ```json
 {
-  "access_token" : "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiIDogImFjY291bnRzLnNoaXAtc2FmZXR5LnJ1IiwgImF1ZCIgOiAid2ViLXNoaXAtc2FmZXR5LnJ1IiwgInN1YiIgOiAiZGZlMDViNzhhNzZiNmFkOGUwZmNiZWYyNzA2NzE3OTNiODZhYTg0OCIsICJpYXQiIDogMTU5MzUzMjExMCwgImV4cCIgOiAxNTkzNTM1NzEwfQ.NorYsi-Ht826HUFCEArVZ60_dEUmYiJYXubnTyweIMg",
+  "access_token" : "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[payload].[signature]",
   "token_type" : "Bearer",
   "expires_in" : 3600,
   "session" : "dfe05b78a76b6ad8e0fcbef270671793b86aa848"
@@ -218,7 +417,7 @@ redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Foauth2%2Fcode
 
 The Implicit grant type is used by mobile and web applications (JavaScript applications running in a web browser) where the confidentiality of the client secret cannot be guaranteed. This grant type is also redirect-based; the access token is passed directly to the user agent for forwarding to the application. This makes the token available to the user and to other applications on the user's device. This grant type does not perform authentication of the application's identity; instead, it relies on the redirect URI registered with the authorization server.
 
-* The Implicit grant type does not support refresh tokens (`refresh_token`) or identity tokens (`id_token`).
+* Identity tokens (`id_token`) are not included in the redirect fragment. Refresh tokens (`refresh_token`) are included in the redirect only if returned by the database.
 
 **Request parameters:**
 
@@ -249,7 +448,7 @@ The access token or error message is returned in the hash fragment of the redire
 
 **Access token response:**
 ```
-http://localhost:8080/callback#token_type=Bearer&expires_in=3600&session=dfe05b78a76b6ad8e0fcbef270671793b86aa848&access_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiIDogImFjY291bnRzLnNoaXAtc2FmZXR5LnJ1IiwgImF1ZCIgOiAid2ViLXNoaXAtc2FmZXR5LnJ1IiwgInN1YiIgOiAiZGZlMDViNzhhNzZiNmFkOGUwZmNiZWYyNzA2NzE3OTNiODZhYTg0OCIsICJpYXQiIDogMTU5MzUzMjExMCwgImV4cCIgOiAxNTkzNTM1NzEwfQ.NorYsi-Ht826HUFCEArVZ60_dEUmYiJYXubnTyweIMg
+http://localhost:8080/callback#token_type=Bearer&expires_in=3600&session=dfe05b78a76b6ad8e0fcbef270671793b86aa848&access_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[payload].[signature]
 ```
 
 * In addition to `access_token`, the fragment string also contains `token_type` (always `Bearer`) and `expires_in` (lifetime of the token in seconds). If the `state` parameter was included in the access token request, its value is also included in the response.
@@ -446,8 +645,8 @@ This grant type allows authentication using a JWT token issued by an external sy
 
 | Field | Value | Description |
 | --- | :---: | --- |
-| client_id | `client_id` | **Required.** The client identifier. |
-| client_secret | `client_secret` | **Required.** The client secret. |
+| client_id | `client_id` | **Recommended.** The client identifier. Not validated at the transport layer for this grant type — the full payload is forwarded to the database. |
+| client_secret | `client_secret` | **Recommended.** The client secret. Not validated at the transport layer for this grant type — the full payload is forwarded to the database. |
 | grant_type | urn:ietf:params:oauth:grant-type:jwt-bearer | **Required.** This field must contain the value `urn:ietf:params:oauth:grant-type:jwt-bearer`. |
 | assertion | `assertion` | **Required.** The JWT token issued by the external system. |
 

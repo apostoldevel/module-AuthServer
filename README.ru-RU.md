@@ -3,7 +3,7 @@
 
 [![en](https://img.shields.io/badge/lang-en-green.svg)](https://github.com/apostoldevel/module-AuthServer/blob/master/README.md)
 
-**Модуль** для [Апостол](https://github.com/apostoldevel/apostol).
+**Модуль** для [Apostol](https://github.com/apostoldevel/apostol) + [db-platform](https://github.com/apostoldevel/db-platform) — **Apostol CRM**[^crm].
 
 Описание
 -
@@ -667,3 +667,5 @@ client_secret=YOUR-CLIENT-SECRET&
 grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&
 assertion=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[сокращено для краткости].NorYsi-Ht826HUFCEArVZ60_dEUmYiJYXubnTyweIMg
 ```
+
+[^crm]: **Apostol CRM** — абстрактный термин, а не самостоятельный продукт. Он обозначает любой проект, в котором совместно используются фреймворк [Apostol](https://github.com/apostoldevel/apostol) (C++) и [db-platform](https://github.com/apostoldevel/db-platform) через специально разработанные модули и процессы. Каждый фреймворк можно использовать независимо; вместе они образуют полноценную backend-платформу.

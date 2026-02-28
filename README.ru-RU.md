@@ -1,7 +1,7 @@
 Сервер авторизации
 -
 
-[![en](https://img.shields.io/badge/lang-en-green.svg)](https://github.com/apostoldevel/module-AuthServer/blob/master/README.md)
+[![en](https://img.shields.io/badge/lang-en-green.svg)](README.md)
 
 **Модуль** для [Apostol](https://github.com/apostoldevel/apostol) + [db-platform](https://github.com/apostoldevel/db-platform) — **Apostol CRM**[^crm].
 
@@ -12,7 +12,7 @@
 
 Ключевые характеристики:
 
-* Написан на C++14, использует асинхронную неблокирующую модель ввода/вывода на основе API **epoll**.
+* Написан на C++20, использует асинхронную неблокирующую модель ввода/вывода на основе API **epoll**.
 * Реализует [RFC 6749](https://tools.ietf.org/html/rfc6749) (OAuth 2.0), OpenID Connect и [RFC 7519](https://tools.ietf.org/html/rfc7519) (JWT). Поддерживаемые типы разрешений: Authorization Code, Implicit, Resource Owner Password Credentials, Client Credentials, Token Exchange ([RFC 8693](https://tools.ietf.org/html/rfc8693)) и JWT Bearer.
 * Вся логика выдачи токенов и управления сессиями выполняется в базе данных (`daemon.token`, `daemon.login`). Слой C++ занимается только HTTP-транспортом, валидацией параметров, криптографическими операциями с JWT и управлением cookies.
 * Верификация JWT выполняется локально с помощью библиотеки `jwt-cpp` — поддерживаются все 12 алгоритмов (HS256/384/512, RS256/384/512, ES256/384/512, PS256/384/512) без обращения к базе данных.
@@ -21,15 +21,15 @@
 
 ### Как модуль встраивается в Апостол
 
-`CAuthServer` регистрируется как обработчик всех запросов, путь которых начинается с `/oauth2/` (см. `CheckLocation`). Принимает методы `GET`, `POST` и `OPTIONS`; все остальные HTTP-методы возвращают `405 Method Not Allowed`.
+`AuthServer` регистрируется как обработчик всех запросов, путь которых начинается с `/oauth2/` (см. `CheckLocation`). Принимает методы `GET`, `POST` и `OPTIONS`; все остальные HTTP-методы возвращают `405 Method Not Allowed`.
 
 **Маршрутизация GET /oauth2/{action}:**
 
 | Действие | Что делает C++ | Вызов в БД |
 |----------|---------------|------------|
-| `authorize` / `auth` | Валидирует `client_id`, `redirect_uri`, `response_type`, `scope`, `access_type`, `prompt` по конфигурации провайдера в памяти. Перенаправляет на страницу входа из `sites.conf` (`oauth2.identifier` или `oauth2.secret`). | Нет |
+| `authorize` / `auth` | Валидирует `client_id`, `redirect_uri`, `response_type`, `scope`, `access_type`, `prompt` по конфигурации провайдера в памяти. Перенаправляет на страницу входа из `conf/sites/*.json` (`oauth2.identifier` или `oauth2.secret`). | Нет |
 | `code` | Получает код авторизации из редиректа внешнего провайдера. Для внешних провайдеров (например, Google): выполняет прямой HTTP-вызов к `token_uri` провайдера для обмена кода на токен, затем верифицирует полученный JWT. | `daemon.login(token, agent, host, origin)` |
-| `callback` | Перенаправляет на `oauth2.callback` из `sites.conf`. | Нет |
+| `callback` | Перенаправляет на `oauth2.callback` из `conf/sites/*.json`. | Нет |
 | `identifier` | Извлекает `value` из тела запроса, проверяет Bearer-токен. | `daemon.identifier(token, value)` |
 
 **Маршрутизация POST /oauth2/{action}:**
@@ -42,7 +42,7 @@
 **Пошаговый процесс обработки запроса `POST /oauth2/token`:**
 
 1. Цикл событий рабочего процесса (epoll) принимает соединение и читает HTTP-запрос.
-2. `CAuthServer` разбирает тип grant и учётные данные клиента из тела запроса или заголовка `Authorization: Basic`. Для гранта `password` без явного `client_id` автоматически используется клиент веб-приложения по умолчанию.
+2. `AuthServer` разбирает тип grant и учётные данные клиента из тела запроса или заголовка `Authorization: Basic`. Для гранта `password` без явного `client_id` автоматически используется клиент веб-приложения по умолчанию.
 3. Для приложений `web` и `service`: C++ проверяет `redirect_uri` и `javascript_origins` в процессе — по конфигурации провайдера, загруженной из `conf/oauth2/`, без обращения к БД.
 4. Выполняет асинхронный вызов `daemon.token(client_id, client_secret, payload, agent, host)`. База данных берёт на себя всю логику grant-типов: генерацию токенов, создание сессий, refresh-токены, обмен токенами и валидацию внешних JWT.
 5. В случае успеха: C++ устанавливает три cookie (`__Secure-AT`, `__Secure-RT` с TTL 60 дней и `SameSite=None; Secure`; сессионный cookie `SID`) и возвращает клиенту JSON-ответ с токеном.
@@ -84,9 +84,14 @@ AuthServer тесно связан с модулями **`oauth2`** и **`admin`
 Настройка
 -
 
-```ini
-[module/AuthServer]
-enable=true
+```json
+{
+  "modules": {
+    "AuthServer": {
+      "enabled": true
+    }
+  }
+}
 ```
 
 Быстрый старт
@@ -317,7 +322,7 @@ POST /oauth2/token
 | scope | `scope` | **Рекомендуемый.** Список областей, разделённых пробелами, которые определяют ресурсы, к которым ваше приложение может получить доступ от имени пользователя. |
 | access_type | `access_type` | **Рекомендуемый.** Указывает, может ли ваше приложение обновлять маркеры доступа, когда пользователь отсутствует в браузере. Допустимые значения: `online` (по умолчанию) и `offline`. |
 | state | `state` | **Рекомендуемый.** Набор случайных символов, которые будут возвращены сервером клиенту (используется для защиты от повторных запросов). |
-| prompt | `prompt` | **Необязательный.** Управляет типом отображаемой страницы входа. Допустимые значения: `signin` (по умолчанию), `secret` (страница ввода пароля), `consent`, `select_account`, `none`. При значении `secret` пользователь перенаправляется на страницу ввода пароля (`oauth2.secret` в `sites.conf`), а не на страницу идентификации. |
+| prompt | `prompt` | **Необязательный.** Управляет типом отображаемой страницы входа. Допустимые значения: `signin` (по умолчанию), `secret` (страница ввода пароля), `consent`, `select_account`, `none`. При значении `secret` пользователь перенаправляется на страницу ввода пароля (`oauth2.secret` в `conf/sites/*.json`), а не на страницу идентификации. |
 
 **Пример запроса:**
 ```http request

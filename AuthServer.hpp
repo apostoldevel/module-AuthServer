@@ -1,113 +1,139 @@
-/*++
+#pragma once
 
-Program name:
+#if defined(WITH_POSTGRESQL) && defined(WITH_SSL)
 
-  Apostol CRM
+#include "apostol/http.hpp"
+#include "apostol/apostol_module.hpp"
+#include "apostol/jwt.hpp"
+#include "apostol/oauth_providers.hpp"
+#include "apostol/pg.hpp"
+#include "apostol/site_config.hpp"
 
-Module Name:
+#include "apostol/fetch_client.hpp"
 
-  AuthServer.hpp
+#include <nlohmann/json_fwd.hpp>
 
-Notices:
+#include <chrono>
+#include <string>
+#include <string_view>
+#include <unordered_map>
 
-  Module: OAuth 2 Authorization Server
+namespace apostol
+{
 
-Author:
+class Application;
 
-  Copyright (c) Prepodobny Alen
+// ─── AuthServer ──────────────────────────────────────────────────────────────
+//
+// OAuth 2.0 Authorization Server — ports v1 CAuthServer.
+//
+// Handles all requests under /oauth2/:
+//   GET  /oauth2/authorize  — redirect to login page
+//   GET  /oauth2/code[/provider] — exchange auth code from external provider
+//   GET  /oauth2/callback   — redirect to callback URL
+//   GET  /oauth2/identifier — GET form of identifier lookup
+//   POST /oauth2/token      — token endpoint (all grant types)
+//   POST /oauth2/identifier — identifier lookup
+//
+// Guard: WITH_POSTGRESQL && WITH_SSL.
+// External providers (Google OAuth): additionally WITH_CURL.
+//
+class AuthServer final : public ApostolModule
+{
+public:
+    explicit AuthServer(Application& app);
 
-  mailto: alienufo@inbox.ru
-  mailto: ufocomp@gmail.com
+    std::string_view name() const override { return "AuthServer"; }
+    bool enabled() const override { return enabled_; }
+    bool check_location(const HttpRequest& req) const override;
+    void heartbeat(std::chrono::system_clock::time_point now) override;
 
---*/
+protected:
+    void init_methods() override;
 
-#ifndef APOSTOL_AUTHSERVER_HPP
-#define APOSTOL_AUTHSERVER_HPP
-//----------------------------------------------------------------------------------------------------------------------
+private:
+    // ── GET routes ───────────────────────────────────────────────────────────
+    void do_get(const HttpRequest& req, HttpResponse& resp);
 
-extern "C++" {
+    // ── POST routes ──────────────────────────────────────────────────────────
+    void do_post(const HttpRequest& req, HttpResponse& resp);
 
-namespace Apostol {
+    // ── Endpoints ────────────────────────────────────────────────────────────
+    void do_token(const HttpRequest& req, HttpResponse& resp);
+    void do_identifier(const HttpRequest& req, HttpResponse& resp);
 
-    namespace Module {
+    // ── OAuth2 error responses (RFC 6749 format) ─────────────────────────────
+    static void reply_oauth2_error(HttpResponse& resp, HttpStatus status,
+                                   std::string_view error,
+                                   std::string_view description);
 
-        //--------------------------------------------------------------------------------------------------------------
+    static void redirect_error(HttpResponse& resp, std::string_view location,
+                               int code, std::string_view error,
+                               std::string_view message);
 
-        //-- CAuthServer -----------------------------------------------------------------------------------------------
+    static void set_secure_cookies(HttpResponse& resp,
+                                   std::string_view access_token,
+                                   std::string_view refresh_token,
+                                   std::string_view session,
+                                   std::string_view domain);
 
-        //--------------------------------------------------------------------------------------------------------------
+    // ── JWT ──────────────────────────────────────────────────────────────────
+    std::string get_public_key(std::string_view kid) const;
 
-        class CAuthServer: public CApostolModule {
-        private:
+    // ── External providers ──────────────────────────────────────────────────
+    void login(std::shared_ptr<HttpConnection> conn,
+               const std::string& redirect,
+               const std::string& redirect_error,
+               const std::string& agent,
+               const std::string& host,
+               const std::string& origin,
+               const nlohmann::json& token_json);
 
-            CDateTime m_FixedDate;
+    void fetch_access_token(std::shared_ptr<HttpConnection> conn,
+                            const OAuthApp& app,
+                            std::string_view code,
+                            const std::string& origin,
+                            const std::string& redirect,
+                            const std::string& redirect_error,
+                            const std::string& agent,
+                            const std::string& host);
 
-            void InitMethods() override;
+    void fetch_certs(const std::string& provider_name, const std::string& cert_uri);
+    void fetch_providers();
+    void check_providers();
 
-            void FetchAccessToken(CHTTPServerConnection *AConnection, const CProvider &Provider, const CString& Code);
+    // ── Helpers ──────────────────────────────────────────────────────────────
 
-            void FetchCerts(CProvider &Provider);
+    /// Extract action from "/oauth2/<action>[/extra]".
+    static std::string extract_action(std::string_view path);
 
-            void FetchProviders();
-            void CheckProviders();
+    /// Extract third segment: "/oauth2/code/<provider>" → "provider".
+    static std::string extract_provider(std::string_view path);
 
-            static void AfterQuery(CHTTPServerConnection *AConnection, const CString &Path, const CJSON &Payload);
+    /// Parse comma/space separated string, split into valid/invalid against allowed list.
+    static void parse_string_list(std::string_view input,
+                                  const std::vector<std::string>& allowed,
+                                  std::vector<std::string>& valid,
+                                  std::vector<std::string>& invalid);
 
-            void QueryException(CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E);
+    // ── State ────────────────────────────────────────────────────────────────
+    PgPool& pool_;
+    FetchClient fetch_;
+    const OAuthProviders& providers_;
+    const SiteConfigs& sites_;
+    bool enabled_;
 
-            CString CreateToken(const CCleanToken& CleanToken);
-            CString VerifyToken(const CString &Token);
+    // JWKS key cache (runtime, per-provider)
+    struct ProviderKeyCache {
+        enum class Status { unknown, fetching, success, failed };
+        Status status = Status::unknown;
+        std::chrono::system_clock::time_point status_time;
+        std::unordered_map<std::string, std::string> keys; // kid → PEM
+    };
+    std::unordered_map<std::string, ProviderKeyCache> key_cache_;
+    std::chrono::system_clock::time_point next_heartbeat_;
+};
 
-            static void ParseString(const CString &String, const CStringList &Strings, CStringList &Valid, CStringList &Invalid);
+} // namespace apostol
 
-            static bool CheckAuthorizationData(const CHTTPRequest &Request, CAuthorization &Authorization);
-
-            static int CheckOAuth2Error(const CJSON &Json, CString &Error, CString &ErrorDescription);
-            static int CheckError(const CJSON &Json, CString &ErrorMessage, bool RaiseIfError = false);
-
-            static CHTTPReply::CStatusType ErrorCodeToStatus(int ErrorCode);
-
-            void RedirectError(CHTTPServerConnection *AConnection, const CString &Location, int ErrorCode, const CString &Error, const CString &Message);
-            static void ReplyError(CHTTPServerConnection *AConnection, int ErrorCode, const CString &Error, const CString &Message);
-
-            static void SetAuthorizationData(CHTTPServerConnection *AConnection, const CJSON &Payload);
-            static void SetSecure(CHTTPReply &Reply, const CString &AccessToken, const CString &RefreshToken, const CString &Session, const CString &Domain);
-
-            void Login(CHTTPServerConnection *AConnection, const CJSON &Token);
-
-        protected:
-
-            void DoGet(CHTTPServerConnection *AConnection) override;
-            void DoPost(CHTTPServerConnection *AConnection);
-
-            void DoToken(CHTTPServerConnection *AConnection);
-            void DoIdentifier(CHTTPServerConnection *AConnection);
-
-            void DoPostgresQueryExecuted(CPQPollQuery *APollQuery) override;
-            void DoPostgresQueryException(CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) override;
-
-        public:
-
-            explicit CAuthServer(CModuleProcess *AProcess);
-
-            ~CAuthServer() override = default;
-
-            static class CAuthServer *CreateModule(CModuleProcess *AProcess) {
-                return new CAuthServer(AProcess);
-            }
-
-            bool CheckAuthorization(CHTTPServerConnection *AConnection, CAuthorization &Authorization);
-
-            void Heartbeat(CDateTime DateTime) override;
-
-            bool Enabled() override;
-
-            bool CheckLocation(const CLocation &Location) override;
-
-        };
-    }
-}
-
-using namespace Apostol::Module;
-}
-#endif //APOSTOL_AUTHSERVER_HPP
+#endif // WITH_POSTGRESQL && WITH_SSL

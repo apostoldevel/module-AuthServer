@@ -1,1317 +1,956 @@
-/*++
+#if defined(WITH_POSTGRESQL) && defined(WITH_SSL)
 
-Program name:
-
-  Apostol CRM
-
-Module Name:
-
-  AuthServer.cpp
-
-Notices:
-
-  Module: OAuth 2 Authorization Server
-
-Author:
-
-  Copyright (c) Prepodobny Alen
-
-  mailto: alienufo@inbox.ru
-  mailto: ufocomp@gmail.com
-
---*/
-
-//----------------------------------------------------------------------------------------------------------------------
-
-#include "Core.hpp"
 #include "AuthServer.hpp"
-//----------------------------------------------------------------------------------------------------------------------
-
-#include "jwt.h"
-//----------------------------------------------------------------------------------------------------------------------
-
-#define WEB_APPLICATION_NAME "web"
-#define SERVICE_APPLICATION_NAME "service"
-
-extern "C++" {
-
-namespace Apostol {
-
-    namespace Module {
-
-        //--------------------------------------------------------------------------------------------------------------
-
-        //-- CAuthServer -----------------------------------------------------------------------------------------------
-
-        //--------------------------------------------------------------------------------------------------------------
-
-        CAuthServer::CAuthServer(CModuleProcess *AProcess) : CApostolModule(AProcess, "authorization server", "module/AuthServer") {
-            m_Headers.Add("Authorization");
-            m_FixedDate = Now();
-
-            CAuthServer::InitMethods();
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::InitMethods() {
-#if defined(_GLIBCXX_RELEASE) && (_GLIBCXX_RELEASE >= 9)
-            m_Methods.AddObject(_T("GET")    , (CObject *) new CMethodHandler(true , [this](auto && Connection) { DoGet(Connection); }));
-            m_Methods.AddObject(_T("POST")   , (CObject *) new CMethodHandler(true , [this](auto && Connection) { DoPost(Connection); }));
-            m_Methods.AddObject(_T("OPTIONS"), (CObject *) new CMethodHandler(true , [this](auto && Connection) { DoOptions(Connection); }));
-            m_Methods.AddObject(_T("HEAD")   , (CObject *) new CMethodHandler(false, [this](auto && Connection) { MethodNotAllowed(Connection); }));
-            m_Methods.AddObject(_T("PUT")    , (CObject *) new CMethodHandler(false, [this](auto && Connection) { MethodNotAllowed(Connection); }));
-            m_Methods.AddObject(_T("DELETE") , (CObject *) new CMethodHandler(false, [this](auto && Connection) { MethodNotAllowed(Connection); }));
-            m_Methods.AddObject(_T("TRACE")  , (CObject *) new CMethodHandler(false, [this](auto && Connection) { MethodNotAllowed(Connection); }));
-            m_Methods.AddObject(_T("PATCH")  , (CObject *) new CMethodHandler(false, [this](auto && Connection) { MethodNotAllowed(Connection); }));
-            m_Methods.AddObject(_T("CONNECT"), (CObject *) new CMethodHandler(false, [this](auto && Connection) { MethodNotAllowed(Connection); }));
-#else
-            m_Methods.AddObject(_T("GET")    , (CObject *) new CMethodHandler(true , std::bind(&CAuthServer::DoGet, this, _1)));
-            m_Methods.AddObject(_T("POST")   , (CObject *) new CMethodHandler(true , std::bind(&CAuthServer::DoPost, this, _1)));
-            m_Methods.AddObject(_T("OPTIONS"), (CObject *) new CMethodHandler(true , std::bind(&CAuthServer::DoOptions, this, _1)));
-            m_Methods.AddObject(_T("HEAD")   , (CObject *) new CMethodHandler(false, std::bind(&CAuthServer::MethodNotAllowed, this, _1)));
-            m_Methods.AddObject(_T("PUT")    , (CObject *) new CMethodHandler(false, std::bind(&CAuthServer::MethodNotAllowed, this, _1)));
-            m_Methods.AddObject(_T("DELETE") , (CObject *) new CMethodHandler(false, std::bind(&CAuthServer::MethodNotAllowed, this, _1)));
-            m_Methods.AddObject(_T("TRACE")  , (CObject *) new CMethodHandler(false, std::bind(&CAuthServer::MethodNotAllowed, this, _1)));
-            m_Methods.AddObject(_T("PATCH")  , (CObject *) new CMethodHandler(false, std::bind(&CAuthServer::MethodNotAllowed, this, _1)));
-            m_Methods.AddObject(_T("CONNECT"), (CObject *) new CMethodHandler(false, std::bind(&CAuthServer::MethodNotAllowed, this, _1)));
-#endif
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        CHTTPReply::CStatusType CAuthServer::ErrorCodeToStatus(int ErrorCode) {
-            CHTTPReply::CStatusType Status = CHTTPReply::ok;
-
-            if (ErrorCode != 0) {
-                switch (ErrorCode) {
-                    case 401:
-                        Status = CHTTPReply::unauthorized;
-                        break;
-
-                    case 403:
-                        Status = CHTTPReply::forbidden;
-                        break;
-
-                    case 404:
-                        Status = CHTTPReply::not_found;
-                        break;
-
-                    case 500:
-                        Status = CHTTPReply::internal_server_error;
-                        break;
-
-                    default:
-                        Status = CHTTPReply::bad_request;
-                        break;
-                }
-            }
-
-            return Status;
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        int CAuthServer::CheckError(const CJSON &Json, CString &ErrorMessage, bool RaiseIfError) {
-            int ErrorCode = 0;
-
-            if (Json.HasOwnProperty(_T("error"))) {
-                const auto& error = Json[_T("error")];
-
-                if (error.HasOwnProperty(_T("code"))) {
-                    ErrorCode = error[_T("code")].AsInteger();
-                } else {
-                    ErrorCode = 40000;
-                }
-
-                if (error.HasOwnProperty(_T("message"))) {
-                    ErrorMessage = error[_T("message")].AsString();
-                } else {
-                    ErrorMessage = _T("Invalid request.");
-                }
-
-                if (RaiseIfError)
-                    throw EDBError(ErrorMessage.c_str());
-
-                if (ErrorCode >= 10000)
-                    ErrorCode = ErrorCode / 100;
-
-                if (ErrorCode < 0)
-                    ErrorCode = 400;
-            }
-
-            return ErrorCode;
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        int CAuthServer::CheckOAuth2Error(const CJSON &Json, CString &Error, CString &ErrorDescription) {
-            int ErrorCode = 0;
-
-            if (Json.HasOwnProperty(_T("error"))) {
-                const auto& error = Json[_T("error")];
-
-                if (error.HasOwnProperty(_T("code"))) {
-                    ErrorCode = error[_T("code")].AsInteger();
-                } else {
-                    ErrorCode = 400;
-                }
-
-                if (error.HasOwnProperty(_T("error"))) {
-                    Error = error[_T("error")].AsString();
-                } else {
-                    Error = _T("invalid_request");
-                }
-
-                if (error.HasOwnProperty(_T("message"))) {
-                    ErrorDescription = error[_T("message")].AsString();
-                } else {
-                    ErrorDescription = _T("Invalid request.");
-                }
-            }
-
-            return ErrorCode;
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::AfterQuery(CHTTPServerConnection *AConnection, const CString &Path, const CJSON &Payload) {
-            if (Path == _T("/sign/in/token")) {
-                SetAuthorizationData(AConnection, Payload);
-            }
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::DoPostgresQueryExecuted(CPQPollQuery *APollQuery) {
-
-            auto pResult = APollQuery->Results(0);
-
-            if (pResult->ExecStatus() != PGRES_TUPLES_OK) {
-                QueryException(APollQuery, Delphi::Exception::EDBError(pResult->GetErrorMessage()));
-                return;
-            }
-
-            CString ErrorMessage;
-
-            auto pConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->Binding());
-
-            if (pConnection != nullptr && !pConnection->ClosedGracefully()) {
-
-                const auto& Path = pConnection->Data()["path"].Lower();
-
-                const auto &caRequest = pConnection->Request();
-                auto &Reply = pConnection->Reply();
-
-                const auto& result_object = caRequest.Params[_T("result_object")];
-                const auto& data_array = caRequest.Params[_T("data_array")];
-
-                CHTTPReply::CStatusType status = CHTTPReply::ok;
-
-                try {
-                    if (pResult->nTuples() == 1) {
-                        const CJSON Payload(pResult->GetValue(0, 0));
-                        status = ErrorCodeToStatus(CheckError(Payload, ErrorMessage));
-                        if (status == CHTTPReply::ok) {
-                            AfterQuery(pConnection, Path, Payload);
-                        }
-                    }
-
-                    PQResultToJson(pResult, Reply.Content);
-                } catch (Delphi::Exception::Exception &E) {
-                    ErrorMessage = E.what();
-                    status = CHTTPReply::bad_request;
-                    Log()->Error(APP_LOG_ERR, 0, "%s", E.what());
-                }
-
-                const auto& caRedirect = status == CHTTPReply::ok ? pConnection->Data()["redirect"] : pConnection->Data()["redirect_error"];
-
-                if (caRedirect.IsEmpty()) {
-                    if (status == CHTTPReply::ok) {
-                        pConnection->SendReply(status, nullptr, true);
-                    } else {
-                        ReplyError(pConnection, status, "server_error", ErrorMessage);
-                    }
-                } else {
-                    if (status == CHTTPReply::ok) {
-                        Redirect(pConnection, caRedirect, true);
-                    } else {
-                        switch (status) {
-                            case CHTTPReply::unauthorized:
-                                RedirectError(pConnection, caRedirect, status, "unauthorized_client", ErrorMessage);
-                                break;
-
-                            case CHTTPReply::forbidden:
-                                RedirectError(pConnection, caRedirect, status, "access_denied", ErrorMessage);
-                                break;
-
-                            case CHTTPReply::internal_server_error:
-                                RedirectError(pConnection, caRedirect, status, "server_error", ErrorMessage);
-                                break;
-
-                            default:
-                                RedirectError(pConnection, caRedirect, status, "invalid_request", ErrorMessage);
-                                break;
-                        }
-                    }
-                }
-            }
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::QueryException(CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
-
-            auto pConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->Binding());
-
-            if (pConnection != nullptr && !pConnection->ClosedGracefully()) {
-                auto &Reply = pConnection->Reply();
-
-                const auto& caRedirect = pConnection->Data()["redirect_error"];
-
-                if (!caRedirect.IsEmpty()) {
-                    RedirectError(pConnection, caRedirect, CHTTPReply::internal_server_error, "server_error", E.what());
-                } else {
-                    ExceptionToJson(CHTTPReply::internal_server_error, E, Reply.Content);
-                    pConnection->SendReply(CHTTPReply::ok, nullptr, true);
-                }
-            }
-
-            Log()->Error(APP_LOG_ERR, 0, "%s", E.what());
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::DoPostgresQueryException(CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
-            QueryException(APollQuery, E);
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        CString CAuthServer::CreateToken(const CCleanToken& CleanToken) {
-            const auto& Providers = Server().Providers();
-            const auto& Default = Providers.Default().Value();
-            const CString Application(WEB_APPLICATION_NAME);
-            auto token = jwt::create()
-                    .set_issuer(Default.Issuer(Application))
-                    .set_audience(Default.ClientId(Application))
-                    .set_issued_at(std::chrono::system_clock::now())
-                    .set_expires_at(std::chrono::system_clock::now() + std::chrono::seconds{3600})
-                    .sign(jwt::algorithm::hs256{std::string(Default.Secret(Application))});
-
-            return token;
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        CString CAuthServer::VerifyToken(const CString &Token) {
-
-            const auto& GetSecret = [](const CProvider &Provider, const CString &Application) {
-                const auto &Secret = Provider.Secret(Application);
-                if (Secret.IsEmpty())
-                    throw ExceptionFrm("Not found Secret for \"%s:%s\"", Provider.Name().c_str(), Application.c_str());
-                return Secret;
-            };
-
-            auto decoded = jwt::decode(Token);
-            const auto& aud = CString(decoded.get_audience());
-
-            CString Application;
-
-            const auto& Providers = Server().Providers();
-
-            const auto Index = OAuth2::Helper::ProviderByClientId(Providers, aud, Application);
-            if (Index == -1)
-                throw COAuth2Error(_T("Not found provider by Client ID."));
-
-            const auto& provider = Providers[Index].Value();
-
-            const auto& iss = CString(decoded.get_issuer());
-
-            CStringList Issuers;
-            provider.GetIssuers(Application, Issuers);
-            if (Issuers[iss].IsEmpty())
-                throw jwt::error::token_verification_exception(jwt::error::token_verification_error::issuer_missmatch);
-
-            const auto& alg = decoded.get_algorithm();
-            const auto& ch = alg.substr(0, 2);
-
-            const auto& Secret = GetSecret(provider, Application);
-
-            if (ch == "HS") {
-                if (alg == "HS256") {
-                    auto verifier = jwt::verify()
-                            .allow_algorithm(jwt::algorithm::hs256{Secret});
-                    verifier.verify(decoded);
-
-                    return Token; // if algorithm HS256
-                } else if (alg == "HS384") {
-                    auto verifier = jwt::verify()
-                            .allow_algorithm(jwt::algorithm::hs384{Secret});
-                    verifier.verify(decoded);
-                } else if (alg == "HS512") {
-                    auto verifier = jwt::verify()
-                            .allow_algorithm(jwt::algorithm::hs512{Secret});
-                    verifier.verify(decoded);
-                }
-            } else if (ch == "RS") {
-
-                const auto& kid = decoded.get_key_id();
-                const auto& key = OAuth2::Helper::GetPublicKey(Providers, kid);
-
-                if (alg == "RS256") {
-                    auto verifier = jwt::verify()
-                            .allow_algorithm(jwt::algorithm::rs256{key});
-                    verifier.verify(decoded);
-                } else if (alg == "RS384") {
-                    auto verifier = jwt::verify()
-                            .allow_algorithm(jwt::algorithm::rs384{key});
-                    verifier.verify(decoded);
-                } else if (alg == "RS512") {
-                    auto verifier = jwt::verify()
-                            .allow_algorithm(jwt::algorithm::rs512{key});
-                    verifier.verify(decoded);
-                }
-            } else if (ch == "ES") {
-
-                const auto& kid = decoded.get_key_id();
-                const auto& key = OAuth2::Helper::GetPublicKey(Providers, kid);
-
-                if (alg == "ES256") {
-                    auto verifier = jwt::verify()
-                            .allow_algorithm(jwt::algorithm::es256{key});
-                    verifier.verify(decoded);
-                } else if (alg == "ES384") {
-                    auto verifier = jwt::verify()
-                            .allow_algorithm(jwt::algorithm::es384{key});
-                    verifier.verify(decoded);
-                } else if (alg == "ES512") {
-                    auto verifier = jwt::verify()
-                            .allow_algorithm(jwt::algorithm::es512{key});
-                    verifier.verify(decoded);
-                }
-            } else if (ch == "PS") {
-
-                const auto& kid = decoded.get_key_id();
-                const auto& key = OAuth2::Helper::GetPublicKey(Providers, kid);
-
-                if (alg == "PS256") {
-                    auto verifier = jwt::verify()
-                            .allow_algorithm(jwt::algorithm::ps256{key});
-                    verifier.verify(decoded);
-                } else if (alg == "PS384") {
-                    auto verifier = jwt::verify()
-                            .allow_algorithm(jwt::algorithm::ps384{key});
-                    verifier.verify(decoded);
-                } else if (alg == "PS512") {
-                    auto verifier = jwt::verify()
-                            .allow_algorithm(jwt::algorithm::ps512{key});
-                    verifier.verify(decoded);
-                }
-            }
-
-            const auto& Result = CCleanToken(R"({"alg":"HS256","typ":"JWT"})", decoded.get_payload(), true);
-
-            std::error_code ec;
-            return Result.Sign(jwt::algorithm::hs256{Secret}, ec);
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        bool CAuthServer::CheckAuthorization(CHTTPServerConnection *AConnection, CAuthorization &Authorization) {
-
-            const auto &caRequest = AConnection->Request();
-
-            try {
-                if (CheckAuthorizationData(caRequest, Authorization)) {
-                    if (Authorization.Schema == CAuthorization::asBearer) {
-                        VerifyToken(Authorization.Token);
-                        return true;
-                    }
-                }
-
-                if (Authorization.Schema == CAuthorization::asBasic)
-                    AConnection->Data().Values("Authorization", "Basic");
-
-                ReplyError(AConnection, CHTTPReply::unauthorized, "unauthorized", "Unauthorized.");
-            } catch (jwt::error::token_expired_exception &e) {
-                ReplyError(AConnection, CHTTPReply::forbidden, "forbidden", e.what());
-            } catch (jwt::error::token_verification_exception &e) {
-                ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request", e.what());
-            } catch (CAuthorizationError &e) {
-                ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request", e.what());
-            } catch (std::exception &e) {
-                ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request", e.what());
-            }
-
-            return false;
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::DoIdentifier(CHTTPServerConnection *AConnection) {
-
-            auto OnExecuted = [](CPQPollQuery *APollQuery) {
-
-                auto pConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->Binding());
-
-                if (pConnection != nullptr && !pConnection->ClosedGracefully()) {
-                    auto &Reply = pConnection->Reply();
-                    auto pResult = APollQuery->Results(0);
-
-                    CString errorMessage;
-                    CHTTPReply::CStatusType status = CHTTPReply::internal_server_error;
-
-                    try {
-                        if (pResult->ExecStatus() != PGRES_TUPLES_OK)
-                            throw Delphi::Exception::EDBError(pResult->GetErrorMessage());
-
-                        Reply.ContentType = CHTTPReply::json;
-                        Reply.Content = pResult->GetValue(0, 0);
-
-                        const CJSON Payload(Reply.Content);
-                        status = ErrorCodeToStatus(CheckError(Payload, errorMessage));
-                    } catch (Delphi::Exception::Exception &E) {
-                        Reply.Content.Clear();
-                        ExceptionToJson(status, E, Reply.Content);
-                        Log()->Error(APP_LOG_ERR, 0, "%s", E.what());
-                    }
-
-                    pConnection->SendReply(status, nullptr, true);
-                }
-            };
-
-            auto OnException = [](CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
-                auto pConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->Binding());
-                if (pConnection != nullptr && !pConnection->ClosedGracefully()) {
-                    ReplyError(pConnection, CHTTPReply::internal_server_error, "server_error", E.what());
-                }
-            };
-
-            const auto &caRequest = AConnection->Request();
-
-            CJSON Json;
-            ContentToJson(caRequest, Json);
-
-            const auto &Identifier = Json["value"].AsString();
-
-            if (Identifier.IsEmpty()) {
-                ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request", "Invalid request.");
-                return;
-            }
-
-            CAuthorization Authorization;
-            if (CheckAuthorization(AConnection, Authorization)) {
-                if (Authorization.Schema == CAuthorization::asBearer) {
-                    CStringList SQL;
-
-                    SQL.Add(CString().Format("SELECT * FROM daemon.identifier(%s, %s);",
-                            PQQuoteLiteral(Authorization.Token).c_str(),
-                            PQQuoteLiteral(Identifier).c_str()
-                    ));
-
-                    try {
-                        ExecSQL(SQL, AConnection, OnExecuted, OnException);
-                    } catch (Delphi::Exception::Exception &E) {
-                        ReplyError(AConnection, CHTTPReply::service_unavailable, "temporarily_unavailable", "Temporarily unavailable.");
-                    }
-
-                    return;
-                }
-
-                ReplyError(AConnection, CHTTPReply::unauthorized, "unauthorized", "Unauthorized.");
-            }
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::RedirectError(CHTTPServerConnection *AConnection, const CString &Location, int ErrorCode, const CString &Error, const CString &Message) {
-            CString errorLocation(Location);
-
-            errorLocation << "?code=" << ErrorCode;
-            errorLocation << "&error=" << Error;
-            errorLocation << "&error_description=" << CHTTPServer::URLEncode(Message);
-
-            Redirect(AConnection, errorLocation, true);
-
-            Log()->Error(APP_LOG_ERR, 0, _T("RedirectError: %s"), Message.c_str());
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::ReplyError(CHTTPServerConnection *AConnection, int ErrorCode, const CString &Error, const CString &Message) {
-            auto &Reply = AConnection->Reply();
-
-            Reply.ContentType = CHTTPReply::json;
-
-            CHTTPReply::CStatusType Status = ErrorCodeToStatus(ErrorCode);
-
-            if (ErrorCode == CHTTPReply::unauthorized) {
-                CHTTPReply::AddUnauthorized(Reply, true, "access_denied", Message.c_str());
-            }
-
-            Reply.Content.Clear();
-            Reply.Content.Format(R"({"error": "%s", "error_description": "%s"})",
-                                   Error.c_str(), Delphi::Json::EncodeJsonString(Message).c_str());
-
-            AConnection->SendReply(Status, nullptr, true);
-
-            Log()->Notice(_T("ReplyError: %s"), Message.c_str());
-        };
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::DoToken(CHTTPServerConnection *AConnection) {
-
-            auto OnExecuted = [](CPQPollQuery *APollQuery) {
-                auto pConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->Binding());
-
-                if (pConnection != nullptr && !pConnection->ClosedGracefully()) {
-                    const auto &Request = pConnection->Request();
-                    auto &Reply = pConnection->Reply();
-                    auto pResult = APollQuery->Results(0);
-
-                    CString error;
-                    CString errorDescription;
-
-                    CHTTPReply::CStatusType status;
-
-                    try {
-                        if (pResult->ExecStatus() != PGRES_TUPLES_OK)
-                            throw Delphi::Exception::EDBError(pResult->GetErrorMessage());
-
-                        PQResultToJson(pResult, Reply.Content);
-
-                        const CJSON Json(Reply.Content);
-                        status = ErrorCodeToStatus(CheckOAuth2Error(Json, error, errorDescription));
-
-                        if (status == CHTTPReply::ok) {
-                            const auto &access_token = Json[_T("access_token")].AsString();
-                            const auto &refresh_token = Json[_T("refresh_token")].AsString();
-                            const auto &session = Json[_T("session")].AsString();
-
-                            SetSecure(Reply, access_token, refresh_token, session, Request.Location.hostname);
-
-                            pConnection->SendReply(status, nullptr, true);
-                        } else {
-                            ReplyError(pConnection, status, error, errorDescription);
-                        }
-                    } catch (Delphi::Exception::Exception &E) {
-                        ReplyError(pConnection, CHTTPReply::internal_server_error, "server_error", E.what());
-                    }
-                }
-            };
-
-            auto OnException = [](CPQPollQuery *APollQuery, const Delphi::Exception::Exception &E) {
-                auto pConnection = dynamic_cast<CHTTPServerConnection *> (APollQuery->Binding());
-                if (pConnection != nullptr && !pConnection->ClosedGracefully()) {
-                    ReplyError(pConnection, CHTTPReply::internal_server_error, "server_error", E.what());
-                }
-            };
-
-            LPCTSTR js_origin_error = _T("The JavaScript origin in the request, %s, does not match the ones authorized for the OAuth client.");
-            LPCTSTR redirect_error = _T("Invalid parameter value for redirect_uri: Non-public domains not allowed: %s");
-            LPCTSTR value_error = _T("Parameter value %s cannot be empty.");
-
-            const auto &caRequest = AConnection->Request();
-
-            CJSON Json;
-            ContentToJson(caRequest, Json);
-
-            CAuthorization Authorization;
-
-            const auto &grant_type = Json["grant_type"].AsString();
-
-            if (grant_type != "urn:ietf:params:oauth:grant-type:jwt-bearer") {
-
-                const auto &client_id = Json["client_id"].AsString();
-                const auto &client_secret = Json["client_secret"].AsString();
-                const auto &redirect_uri = Json["redirect_uri"].AsString();
-
-                const auto &authorization = caRequest.Headers["Authorization"];
-                const auto &origin = GetOrigin(AConnection);
-                const auto &providers = Server().Providers();
-
-                if (authorization.IsEmpty()) {
-                    Authorization.Schema = CAuthorization::asBasic;
-                    Authorization.Username = client_id;
-                    Authorization.Password = client_secret;
-                } else {
-                    Authorization << authorization;
-
-                    if (Authorization.Schema != CAuthorization::asBasic) {
-                        ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
-                                   "Invalid authorization schema.");
-                        return;
-                    }
-                }
-
-                if (Authorization.Username.IsEmpty()) {
-                    if (grant_type != "password") {
-                        ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
-                                   CString().Format(value_error, "client_id"));
-                        return;
-                    }
-
-                    const auto &provider = providers.DefaultValue();
-                    Authorization.Username = provider.ClientId(WEB_APPLICATION_NAME);
-                }
-
-                if (Authorization.Password.IsEmpty()) {
-                    CString Application;
-                    const auto index = OAuth2::Helper::ProviderByClientId(providers, Authorization.Username, Application);
-                    if (index != -1) {
-                        const auto &provider = providers[index].Value();
-                        if (Application == WEB_APPLICATION_NAME ||
-                            Application == SERVICE_APPLICATION_NAME) { // TODO: Need delete application "service"
-
-                            if (!redirect_uri.empty()) {
-                                CStringList RedirectURI;
-                                provider.RedirectURI(Application, RedirectURI);
-                                if (RedirectURI.IndexOfName(redirect_uri) == -1) {
-                                    ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
-                                               CString().Format(redirect_error, redirect_uri.c_str()));
-                                    return;
-                                }
-                            }
-
-                            CStringList JavaScriptOrigins;
-                            provider.JavaScriptOrigins(Application, JavaScriptOrigins);
-                            if (JavaScriptOrigins.IndexOfName(origin) == -1) {
-                                ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
-                                           CString().Format(js_origin_error, origin.c_str()));
-                                return;
-                            }
-
-                            Authorization.Password = provider.Secret(Application);
-                        }
-                    }
-                }
-
-                if (Authorization.Password.IsEmpty()) {
-                    ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request",
-                               CString().Format(value_error, "client_secret"));
-                    return;
-                }
-            }
-
-            const auto &agent = GetUserAgent(AConnection);
-            const auto &host = GetRealIP(AConnection);
-
-            CStringList SQL;
-
-            SQL.Add(CString().Format("SELECT * FROM daemon.token(%s, %s, %s::jsonb, %s, %s);",
-                                     PQQuoteLiteral(Authorization.Username).c_str(),
-                                     PQQuoteLiteral(Authorization.Password).c_str(),
-                                     PQQuoteLiteral(Json.ToString()).c_str(),
-                                     PQQuoteLiteral(agent).c_str(),
-                                     PQQuoteLiteral(host).c_str()
-            ));
-
-            try {
-                ExecSQL(SQL, AConnection, OnExecuted, OnException);
-            } catch (Delphi::Exception::Exception &E) {
-                ReplyError(AConnection, CHTTPReply::bad_request, "temporarily_unavailable", "Temporarily unavailable.");
-            }
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::Login(CHTTPServerConnection *AConnection, const CJSON &Token) {
-
-            const auto &errorLocation = AConnection->Data()["redirect_error"];
-
-            try {
-                const auto &token_type = Token["token_type"].AsString();
-                const auto &id_token = Token["id_token"].AsString();
-
-                CAuthorization Authorization;
-
-                try {
-                    Authorization << (token_type + " " + id_token);
-
-                    if (Authorization.Schema == CAuthorization::asBearer) {
-                        Authorization.Token = VerifyToken(Authorization.Token);
-                    }
-
-                    const auto &agent = GetUserAgent(AConnection);
-                    const auto &protocol = GetProtocol(AConnection);
-                    const auto &host = GetRealIP(AConnection);
-                    const auto &host_name = GetHost(AConnection);
-
-                    CStringList SQL;
-
-                    SQL.Add(CString().Format("SELECT * FROM daemon.login(%s, %s, %s, %s);",
-                                             PQQuoteLiteral(Authorization.Token).c_str(),
-                                             PQQuoteLiteral(agent).c_str(),
-                                             PQQuoteLiteral(host).c_str(),
-                                             PQQuoteLiteral(CString().Format("%s://%s", protocol.c_str(), host_name.c_str())).c_str()
-                    ));
-
-                    AConnection->Data().Values("authorized", "false");
-                    AConnection->Data().Values("signature", "false");
-                    AConnection->Data().Values("path", "/sign/in/token");
-
-                    try {
-                        ExecSQL(SQL, AConnection);
-                    } catch (Delphi::Exception::Exception &E) {
-                        RedirectError(AConnection, errorLocation, CHTTPReply::service_unavailable, "temporarily_unavailable", "Temporarily unavailable.");
-                    }
-                } catch (jwt::error::token_expired_exception &e) {
-                    RedirectError(AConnection, errorLocation, CHTTPReply::forbidden, "invalid_token", e.what());
-                } catch (jwt::error::token_verification_exception &e) {
-                    RedirectError(AConnection, errorLocation, CHTTPReply::bad_request, "invalid_token", e.what());
-                } catch (CAuthorizationError &e) {
-                    RedirectError(AConnection, errorLocation, CHTTPReply::unauthorized, "unauthorized_client", e.what());
-                } catch (std::exception &e) {
-                    RedirectError(AConnection, errorLocation, CHTTPReply::bad_request, "invalid_token", e.what());
-                }
-            } catch (Delphi::Exception::Exception &E) {
-                RedirectError(AConnection, errorLocation, CHTTPReply::internal_server_error, "server_error", E.what());
-                Log()->Error(APP_LOG_INFO, 0, "[Token] Message: %s", E.what());
-            }
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::SetSecure(CHTTPReply &Reply, const CString &AccessToken, const CString &RefreshToken, const CString &Session, const CString &Domain) {
-            if (!AccessToken.IsEmpty())
-                Reply.SetCookie(_T("__Secure-AT"), AccessToken.c_str(), _T("/"), 60 * SecsPerDay, true, _T("None"), true, Domain.c_str());
-
-            if (!RefreshToken.IsEmpty())
-                Reply.SetCookie(_T("__Secure-RT"), RefreshToken.c_str(), _T("/"), 60 * SecsPerDay, true, _T("None"), true, Domain.c_str());
-
-            if (!Session.IsEmpty())
-                Reply.SetCookie(_T("SID"), Session.c_str(), _T("/"), 60 * SecsPerDay);
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::SetAuthorizationData(CHTTPServerConnection *AConnection, const CJSON &Payload) {
-
-            auto &Request = AConnection->Request();
-            auto &Reply = AConnection->Reply();
-
-            const auto &access_token = Payload[_T("access_token")].AsString();
-            const auto &refresh_token = Payload[_T("refresh_token")].AsString();
-            const auto &token_type = Payload[_T("token_type")].AsString();
-            const auto &expires_in = Payload[_T("expires_in")].AsString();
-            const auto &state = Payload[_T("state")].AsString();
-            const auto &session = Payload[_T("session")].AsString();
-
-            SetSecure(Reply, access_token, refresh_token, session, Request.Location.hostname);
-
-            CString Redirect = AConnection->Data()["redirect"];
-            if (!Redirect.IsEmpty()) {
-                Redirect << "#access_token=" << access_token;
-
-                if (!refresh_token.IsEmpty())
-                    Redirect << "&refresh_token=" << CHTTPServer::URLEncode(refresh_token);
-
-                Redirect << "&token_type=" << token_type;
-                Redirect << "&expires_in=" << expires_in;
-                Redirect << "&session=" << session;
-
-                if (!state.IsEmpty())
-                    Redirect << "&state=" << CHTTPServer::URLEncode(state);
-
-                AConnection->Data().Values("redirect", Redirect);
-            }
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        bool CAuthServer::CheckAuthorizationData(const CHTTPRequest &Request, CAuthorization &Authorization) {
-
-            const auto &headers = Request.Headers;
-            const auto &authorization = headers["Authorization"];
-
-            if (authorization.IsEmpty()) {
-
-                Authorization.Username = headers["Session"];
-                Authorization.Password = headers["Secret"];
-
-                if (Authorization.Username.IsEmpty() || Authorization.Password.IsEmpty())
-                    return false;
-
-                Authorization.Schema = CAuthorization::asBasic;
-                Authorization.Type = CAuthorization::atSession;
-
-            } else {
-                Authorization << authorization;
-            }
-
-            return true;
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::ParseString(const CString &String, const CStringList &Strings, CStringList &Valid, CStringList &Invalid) {
-            Valid.Clear();
-            Invalid.Clear();
-
-            if (!String.IsEmpty()) {
-                Valid.LineBreak(", ");
-                Invalid.LineBreak(", ");
-
-                CStringList Scopes;
-                SplitColumns(String, Scopes, ' ');
-
-                for (int i = 0; i < Scopes.Count(); i++) {
-                    if (Strings.IndexOfName(Scopes[i]) == -1) {
-                        Invalid.Add(Scopes[i]);
-                    } else {
-                        Valid.Add(Scopes[i]);
-                    }
-                }
-            }
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::FetchAccessToken(CHTTPServerConnection *AConnection, const CProvider &Provider, const CString &Code) {
-
-            auto OnRequestToken = [](CHTTPClient *Sender, CHTTPRequest &Request) {
-
-                const auto &token_uri = Sender->Data()["token_uri"];
-                const auto &code = Sender->Data()["code"];
-                const auto &client_id = Sender->Data()["client_id"];
-                const auto &client_secret = Sender->Data()["client_secret"];
-                const auto &redirect_uri = Sender->Data()["redirect_uri"];
-                const auto &grant_type = Sender->Data()["grant_type"];
-
-                Request.Content = _T("client_id=");
-                Request.Content << CHTTPServer::URLEncode(client_id);
-
-                Request.Content << _T("&client_secret=");
-                Request.Content << CHTTPServer::URLEncode(client_secret);
-
-                Request.Content << _T("&grant_type=");
-                Request.Content << grant_type;
-
-                Request.Content << _T("&code=");
-                Request.Content << CHTTPServer::URLEncode(code);
-
-                Request.Content << _T("&redirect_uri=");
-                Request.Content << CHTTPServer::URLEncode(redirect_uri);
-
-                CHTTPRequest::Prepare(Request, _T("POST"), token_uri.c_str(), _T("application/x-www-form-urlencoded"));
-
-                DebugRequest(Request);
-            };
-
-            auto OnReplyToken = [this, AConnection](CTCPConnection *Sender) {
-
-                auto pConnection = dynamic_cast<CHTTPClientConnection *> (Sender);
-                auto &Reply = pConnection->Reply();
-
-                DebugReply(Reply);
-
-                pConnection->CloseConnection(true);
-
-                if (!Assigned(AConnection))
-                    return false;
-
-                if (AConnection->ClosedGracefully())
-                    return false;
-
-                const CJSON Json(Reply.Content);
-
-                if (Reply.Status == CHTTPReply::ok) {
-                    if (AConnection->Data()["provider"] == "google") {
-                        Login(AConnection, Json);
-                    } else {
-                        SetAuthorizationData(AConnection, Json);
-                        Redirect(AConnection, AConnection->Data()["redirect"], true);
-                    }
-                } else {
-                    const auto &redirect_error = AConnection->Data()["redirect_error"];
-
-                    const auto &error = Json[_T("error")].AsString();
-                    const auto &error_description = Json[_T("error_description")].AsString();
-
-                    RedirectError(AConnection, redirect_error, Reply.Status, error, error_description);
-                }
-
-                return true;
-            };
-
-            auto OnException = [this, AConnection](CTCPConnection *Sender, const Delphi::Exception::Exception &E) {
-
-                auto pConnection = dynamic_cast<CHTTPClientConnection *> (Sender);
-                auto pClient = dynamic_cast<CHTTPClient *> (pConnection->Client());
-
-                DebugReply(pConnection->Reply());
-
-                const auto &redirect_error = AConnection->Data()["redirect_error"];
-
-                if (!AConnection->ClosedGracefully())
-                    RedirectError(AConnection, redirect_error, CHTTPReply::internal_server_error, "server_error", E.what());
-
-                Log()->Error(APP_LOG_ERR, 0, "[%s:%d] %s", pClient->Host().c_str(), pClient->Port(), E.what());
-            };
-
-            const auto &caRequest = AConnection->Request();
-
-            const auto &redirect_error = AConnection->Data()["redirect_error"];
-            const auto &caApplication = WEB_APPLICATION_NAME;
-
-            CString TokenURI(Provider.TokenURI(caApplication));
-
-            if (!TokenURI.IsEmpty()) {
-                if (TokenURI.front() == '/') {
-                    TokenURI = caRequest.Location.Origin() + TokenURI;
-                }
-
-                CLocation URI(TokenURI);
-
-                auto pClient = GetClient(URI.hostname, URI.port);
-
-                pClient->Data().Values("client_id", Provider.ClientId(caApplication));
-                pClient->Data().Values("client_secret", Provider.Secret(caApplication));
-                pClient->Data().Values("grant_type", "authorization_code");
-                pClient->Data().Values("code", Code);
-                pClient->Data().Values("redirect_uri", caRequest.Location.Origin() + caRequest.Location.pathname);
-                pClient->Data().Values("token_uri", URI.pathname);
-
-                pClient->OnRequest(OnRequestToken);
-                pClient->OnExecute(OnReplyToken);
-                pClient->OnException(OnException);
-
-                pClient->AutoFree(true);
-                pClient->Active(true);
-            } else {
-                RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request", "Parameter \"token_uri\" not found in provider configuration.");
-            }
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::DoGet(CHTTPServerConnection *AConnection) {
-
-            auto SetSearch = [](const CStringList &Search, CString &Location) {
-                for (int i = 0; i < Search.Count(); ++i) {
-                    if (i == 0) {
-                        Location << "?";
-                    } else {
-                        Location << "&";
-                    }
-                    Location << Search.Strings(i);
-                }
-            };
-
-            const auto &caRequest = AConnection->Request();
-            auto &Reply = AConnection->Reply();
-
-            Reply.ContentType = CHTTPReply::html;
-
-            CStringList Routs;
-            SplitColumns(caRequest.Location.pathname, Routs, '/');
-
-            if (Routs.Count() < 2) {
-                AConnection->SendStockReply(CHTTPReply::not_found);
-                return;
-            }
-
-            const auto &siteConfig = GetSiteConfig(caRequest.Location.Host());
-
-            const auto &redirect_identifier = siteConfig["oauth2.identifier"];
-            const auto &redirect_secret = siteConfig["oauth2.secret"];
-            const auto &redirect_callback = siteConfig["oauth2.callback"];
-            const auto &redirect_error = siteConfig["oauth2.error"];
-            const auto &redirect_debug = siteConfig["oauth2.debug"];
-
-            CString oauthLocation;
-
-            CStringList Search;
-            CStringList Valid;
-            CStringList Invalid;
-
-            CStringList ResponseType;
-            ResponseType.Add("code");
-            ResponseType.Add("token");
-
-            CStringList AccessType;
-            AccessType.Add("online");
-            AccessType.Add("offline");
-
-            CStringList Prompt;
-            Prompt.Add("none");
-            Prompt.Add("signin");
-            Prompt.Add("secret");
-            Prompt.Add("consent");
-            Prompt.Add("select_account");
-
-            const auto &providers = Server().Providers();
-            const auto &action = Routs[1].Lower();
-
-            if (action == "authorize" || action == "auth") {
-
-                const auto &response_type = caRequest.Params["response_type"];
-                const auto &client_id = caRequest.Params["client_id"];
-                const auto &access_type = caRequest.Params["access_type"];
-                const auto &redirect_uri = caRequest.Params["redirect_uri"];
-                const auto &scope = caRequest.Params["scope"];
-                const auto &state = caRequest.Params["state"];
-                const auto &prompt = caRequest.Params["prompt"];
-
-                if (redirect_uri.IsEmpty()) {
-                    RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request",
-                                  CString().Format("Parameter value redirect_uri cannot be empty."));
-                    return;
-                }
-
-                CString Application;
-
-                const auto index = OAuth2::Helper::ProviderByClientId(providers, client_id, Application);
-                if (index == -1) {
-                    RedirectError(AConnection, redirect_error, CHTTPReply::unauthorized, "invalid_client", CString().Format("The OAuth client was not found."));
-                    return;
-                }
-
-                const auto& provider = providers[index].Value();
-
-                CStringList RedirectURI;
-                provider.RedirectURI(Application, RedirectURI);
-                if (RedirectURI.IndexOfName(redirect_uri) == -1) {
-                    RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request",
-                                  CString().Format("Invalid parameter value for redirect_uri: Non-public domains not allowed: %s", redirect_uri.c_str()));
-                    return;
-                }
-
-                ParseString(response_type, ResponseType, Valid, Invalid);
-
-                if (Invalid.Count() > 0) {
-                    RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "unsupported_response_type",
-                                  CString().Format("Some requested response type were invalid: {valid=[%s], invalid=[%s]}",
-                                                   Valid.Text().c_str(), Invalid.Text().c_str()));
-                    return;
-                }
-
-                if (response_type == "token")
-                    AccessType.Clear();
-
-                if (!access_type.IsEmpty() && AccessType.IndexOfName(access_type) == -1) {
-                    RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request",
-                                  CString().Format("Invalid access_type: %s", access_type.c_str()));
-                    return;
-                }
-
-                CStringList Scopes;
-                provider.GetScopes(Application, Scopes);
-                ParseString(scope, Scopes, Valid, Invalid);
-
-                if (Invalid.Count() > 0) {
-                    RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_scope",
-                                  CString().Format("Some requested scopes were invalid: {valid=[%s], invalid=[%s]}",
-                                                   Valid.Text().c_str(), Invalid.Text().c_str()));
-                    return;
-                }
-
-                ParseString(prompt, Prompt, Valid, Invalid);
-
-                if (Invalid.Count() > 0) {
-                    RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "unsupported_prompt_type",
-                                  CString().Format("Some requested prompt type were invalid: {valid=[%s], invalid=[%s]}",
-                                                   Valid.Text().c_str(), Invalid.Text().c_str()));
-                    return;
-                }
-
-                oauthLocation = prompt == "secret" ? redirect_secret : redirect_identifier;
-
-                Search.Clear();
-
-                Search.AddPair("client_id", client_id);
-                Search.AddPair("response_type", response_type);
-
-                if (!redirect_uri.IsEmpty())
-                    Search.AddPair("redirect_uri", CHTTPServer::URLEncode(redirect_uri));
-                if (!access_type.IsEmpty())
-                    Search.AddPair("access_type", access_type);
-                if (!scope.IsEmpty())
-                    Search.AddPair("scope", CHTTPServer::URLEncode(scope));
-                if (!prompt.IsEmpty())
-                    Search.AddPair("prompt", CHTTPServer::URLEncode(prompt));
-                if (!state.IsEmpty())
-                    Search.AddPair("state", CHTTPServer::URLEncode(state));
-
-                SetSearch(Search, oauthLocation);
-
-            } else if (action == "code") {
-
-                const auto &code = caRequest.Params["code"];
-
-                if (code.IsEmpty()) {
-                    RedirectError(AConnection, redirect_error, CHTTPReply::bad_request, "invalid_request", "Parameter \"code\" not found.");
-                    return;
-                }
-
-                const auto &error = caRequest.Params["error"];
-
-                if (!error.IsEmpty()) {
-                    const auto errorCode = StrToIntDef(code.c_str(), CHTTPReply::bad_request);
-                    RedirectError(AConnection, redirect_error, (int) errorCode, error, caRequest.Params["error_description"]);
-                    return;
-                }
-
-                const auto &state = caRequest.Params["state"];
-                const auto &providerName = Routs.Count() == 3 ? Routs[2].Lower() : "default";
-                const auto &provider = providers[providerName];
-
-                AConnection->Data().Values("provider", providerName);
-                AConnection->Data().Values("redirect", state == "debug" ? redirect_debug : redirect_callback);
-                AConnection->Data().Values("redirect_error", redirect_error);
-
-                FetchAccessToken(AConnection, provider, code);
-
-                return;
-
-            } else if (action == "callback") {
-
-                oauthLocation = redirect_callback;
-
-            } else if (action == "identifier") {
-                DoIdentifier(AConnection);
-                return;
-            }
-
-            if (oauthLocation.IsEmpty())
-                AConnection->SendStockReply(CHTTPReply::not_found);
-            else
-                Redirect(AConnection, oauthLocation);
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::DoPost(CHTTPServerConnection *AConnection) {
-
-            const auto &caRequest = AConnection->Request();
-            auto &Reply = AConnection->Reply();
-
-            Reply.ContentType = CHTTPReply::json;
-
-            CStringList Routs;
-            SplitColumns(caRequest.Location.pathname, Routs, '/');
-
-            if (Routs.Count() < 2) {
-                ReplyError(AConnection, CHTTPReply::not_found, "invalid_request", "Not found.");
-                return;
-            }
-
-            AConnection->Data().Values("oauth2", "true");
-            AConnection->Data().Values("path", caRequest.Location.pathname);
-
-            try {
-                const auto &action = Routs[1].Lower();
-
-                if (action == "token") {
-                    DoToken(AConnection);
-                } else if (action == "identifier") {
-                    DoIdentifier(AConnection);
-                } else {
-                    ReplyError(AConnection, CHTTPReply::not_found, "invalid_request", "Not found.");
-                }
-            } catch (Delphi::Exception::Exception &E) {
-                ReplyError(AConnection, CHTTPReply::bad_request, "invalid_request", E.what());
-            }
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::FetchCerts(CProvider &Provider) {
-
-            const auto& URI = Provider.CertURI(WEB_APPLICATION_NAME);
-
-            if (URI.IsEmpty()) {
-                Log()->Error(APP_LOG_INFO, 0, _T("Certificate URI in provider \"%s\" is empty."), Provider.Name().c_str());
-                return;
-            }
-
-            Log()->Error(APP_LOG_INFO, 0, _T("Trying to fetch public keys from: %s"), URI.c_str());
-
-            auto OnRequest = [&Provider](CHTTPClient *Sender, CHTTPRequest &Request) {
-                Provider.KeyStatusTime(Now());
-                Provider.KeyStatus(ksFetching);
-                CLocation Location(Provider.CertURI(WEB_APPLICATION_NAME));
-                CHTTPRequest::Prepare(Request, "GET", Location.pathname.c_str());
-            };
-
-            auto OnExecute = [&Provider](CTCPConnection *AConnection) {
-                auto pConnection = dynamic_cast<CHTTPClientConnection *> (AConnection);
-                auto &Reply = pConnection->Reply();
-
-                try {
-                    DebugRequest(pConnection->Request());
-                    DebugReply(Reply);
-
-                    if (Reply.Status == CHTTPReply::ok) {
-                        Provider.Keys().Clear();
-                        Provider.Keys() << Reply.Content;
-                        Provider.KeyStatusTime(Now());
-                        Provider.KeyStatus(ksSuccess);
-                    } else {
-                        Provider.KeyStatusTime(Now());
-                        Provider.KeyStatus(ksFailed);
-                        Log()->Error(APP_LOG_ERR, 0, "[Certificate] Status: %d (%s)", Reply.Status, Reply.StatusText.c_str());
-                    }
-                } catch (Delphi::Exception::Exception &E) {
-                    Provider.KeyStatusTime(Now());
-                    Provider.KeyStatus(ksFailed);
-                    Log()->Error(APP_LOG_ERR, 0, "[Certificate] Message: %s", E.what());
-                }
-
-                pConnection->CloseConnection(true);
-                return true;
-            };
-
-            auto OnException = [this, &Provider](CTCPConnection *AConnection, const Delphi::Exception::Exception &E) {
-                auto pConnection = dynamic_cast<CHTTPClientConnection *> (AConnection);
-                auto pClient = dynamic_cast<CHTTPClient *> (pConnection->Client());
-
-                Provider.KeyStatusTime(Now());
-                Provider.KeyStatus(ksFailed);
-
-                m_FixedDate = Now() + (CDateTime) 5 / SecsPerDay; // 5 sec
-
-                Log()->Error(APP_LOG_ERR, 0, "[%s:%d] %s", pClient->Host().c_str(), pClient->Port(), E.what());
-            };
-
-            CLocation Location(URI);
-            auto pClient = GetClient(Location.hostname, Location.port);
-
-            pClient->OnRequest(OnRequest);
-            pClient->OnExecute(OnExecute);
-            pClient->OnException(OnException);
-
-            pClient->AutoFree(true);
-            pClient->Active(true);
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::FetchProviders() {
-            auto& Providers = Server().Providers();
-            for (int i = 0; i < Providers.Count(); i++) {
-                auto& Provider = Providers[i].Value();
-                if (Provider.ApplicationExists(WEB_APPLICATION_NAME)) {
-                    if (Provider.KeyStatus() == ksUnknown) {
-                        FetchCerts(Provider);
-                    }
-                }
-            }
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::CheckProviders() {
-            auto& Providers = Server().Providers();
-            for (int i = 0; i < Providers.Count(); i++) {
-                auto& Provider = Providers[i].Value();
-                if (Provider.ApplicationExists(WEB_APPLICATION_NAME)) {
-                    if (Provider.KeyStatus() != ksUnknown) {
-                        Provider.KeyStatusTime(Now());
-                        Provider.KeyStatus(ksUnknown);
-                    }
-                }
-            }
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        void CAuthServer::Heartbeat(CDateTime DateTime) {
-            if ((DateTime >= m_FixedDate)) {
-                m_FixedDate = DateTime + (CDateTime) 30 / MinsPerDay; // 30 min
-
-                CheckProviders();
-                FetchProviders();
-            }
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        bool CAuthServer::Enabled() {
-            if (m_ModuleStatus == msUnknown)
-                m_ModuleStatus = Config()->IniFile().ReadBool(SectionName(), "enable", true) ? msEnabled : msDisabled;
-            return m_ModuleStatus == msEnabled;
-        }
-        //--------------------------------------------------------------------------------------------------------------
-
-        bool CAuthServer::CheckLocation(const CLocation &Location) {
-            return Location.pathname.SubString(0, 8) == _T("/oauth2/");
-        }
-        //--------------------------------------------------------------------------------------------------------------
+#include "apostol/application.hpp"
+
+#include "apostol/http_utils.hpp"
+#include "apostol/jwt.hpp"
+#include "apostol/pg_utils.hpp"
+
+#include <fmt/format.h>
+#include <nlohmann/json.hpp>
+
+
+namespace apostol
+{
+
+static std::string join_strings(const std::vector<std::string>& v, std::string_view sep)
+{
+    if (v.empty()) return {};
+    std::string result = v[0];
+    for (std::size_t i = 1; i < v.size(); ++i) {
+        result += sep;
+        result += v[i];
+    }
+    return result;
+}
+
+static constexpr const char* WEB_APP   = "web";
+static constexpr const char* SVC_APP   = "service";
+
+static constexpr auto kHeartbeatInterval = std::chrono::minutes(30);
+static constexpr auto kRetryInterval     = std::chrono::seconds(5);
+static constexpr int  kCookieMaxAge      = 60 * 86400; // 60 days
+
+// ─── Construction ────────────────────────────────────────────────────────────
+
+AuthServer::AuthServer(Application& app)
+    : pool_(app.db_pool())
+    , fetch_(app.worker_loop())
+    , providers_(app.providers())
+    , sites_(app.sites())
+    , enabled_(true)
+    , next_heartbeat_(std::chrono::system_clock::now())
+{
+    load_allowed_origins(providers_);
+}
+
+// ─── check_location ─────────────────────────────────────────────────────────
+
+bool AuthServer::check_location(const HttpRequest& req) const
+{
+    return req.path.size() >= 8 && req.path.substr(0, 8) == "/oauth2/";
+}
+
+// ─── init_methods ───────────────────────────────────────────────────────────
+
+void AuthServer::init_methods()
+{
+    add_method("GET",  [this](auto& req, auto& resp) { do_get(req, resp); });
+    add_method("POST", [this](auto& req, auto& resp) { do_post(req, resp); });
+
+    add_allowed_header("Authorization");
+    load_allowed_origins(providers_);
+}
+
+// ─── heartbeat ──────────────────────────────────────────────────────────────
+
+void AuthServer::heartbeat(std::chrono::system_clock::time_point now)
+{
+    if (now >= next_heartbeat_) {
+        next_heartbeat_ = now + kHeartbeatInterval;
+        check_providers();
+        fetch_providers();
     }
 }
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+std::string AuthServer::extract_action(std::string_view path)
+{
+    // "/oauth2/<action>[/extra]" → "<action>"
+    if (path.size() < 9 || path.substr(0, 8) != "/oauth2/")
+        return {};
+    auto rest = path.substr(8); // after "/oauth2/"
+    auto slash = rest.find('/');
+    return std::string(rest.substr(0, slash));
 }
+
+std::string AuthServer::extract_provider(std::string_view path)
+{
+    // "/oauth2/code/<provider>" → "<provider>"
+    if (path.size() < 9)
+        return {};
+    auto rest = path.substr(8); // after "/oauth2/"
+    auto slash = rest.find('/');
+    if (slash == std::string_view::npos || slash + 1 >= rest.size())
+        return {};
+    return std::string(rest.substr(slash + 1));
+}
+
+void AuthServer::parse_string_list(std::string_view input,
+                                   const std::vector<std::string>& allowed,
+                                   std::vector<std::string>& valid,
+                                   std::vector<std::string>& invalid)
+{
+    valid.clear();
+    invalid.clear();
+
+    if (input.empty())
+        return;
+
+    // Split on space, comma, or both
+    std::string_view rest = input;
+    while (!rest.empty()) {
+        auto pos = rest.find_first_of(" ,");
+        auto token = rest.substr(0, pos);
+        if (!token.empty()) {
+            bool found = false;
+            for (const auto& a : allowed) {
+                if (a == token) { found = true; break; }
+            }
+            if (found)
+                valid.emplace_back(token);
+            else
+                invalid.emplace_back(token);
+        }
+        if (pos == std::string_view::npos) break;
+        rest = rest.substr(pos + 1);
+    }
+}
+
+// ─── OAuth2 error responses ─────────────────────────────────────────────────
+
+void AuthServer::reply_oauth2_error(HttpResponse& resp, HttpStatus status,
+                                    std::string_view error,
+                                    std::string_view description)
+{
+    if (status == HttpStatus::unauthorized) {
+        resp.set_header("WWW-Authenticate",
+                        fmt::format("Bearer error=\"access_denied\", "
+                                    "error_description=\"{}\"",
+                                    json_escape(description)));
+    }
+
+    resp.set_status(status)
+        .set_body(fmt::format(R"({{"error":"{}","error_description":"{}"}})",
+                              json_escape(error), json_escape(description)),
+                  "application/json");
+}
+
+void AuthServer::redirect_error(HttpResponse& resp, std::string_view location,
+                                int code, std::string_view error,
+                                std::string_view message)
+{
+    auto url = fmt::format("{}?code={}&error={}&error_description={}",
+                           location, code, error, url_encode(message));
+    redirect(resp, url);
+}
+
+void AuthServer::set_secure_cookies(HttpResponse& resp,
+                                    std::string_view access_token,
+                                    std::string_view refresh_token,
+                                    std::string_view session,
+                                    std::string_view domain)
+{
+    if (!access_token.empty())
+        resp.set_cookie("__Secure-AT", access_token, "/", kCookieMaxAge,
+                        true, "None", true, domain);
+
+    if (!refresh_token.empty())
+        resp.set_cookie("__Secure-RT", refresh_token, "/", kCookieMaxAge,
+                        true, "None", true, domain);
+
+    if (!session.empty())
+        resp.set_cookie("SID", session, "/", kCookieMaxAge);
+}
+
+// ─── JWT ────────────────────────────────────────────────────────────────────
+
+std::string AuthServer::get_public_key(std::string_view kid) const
+{
+    for (const auto& [provider_name, cache] : key_cache_) {
+        if (cache.status == ProviderKeyCache::Status::success) {
+            auto it = cache.keys.find(std::string(kid));
+            if (it != cache.keys.end())
+                return it->second;
+        }
+    }
+    return {};
+}
+
+// ─── do_get ─────────────────────────────────────────────────────────────────
+
+void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
+{
+    const auto action = extract_action(req.path);
+
+    const auto host = get_host(req);
+    const auto* site = sites_.find(host);
+
+    const std::string redirect_identifier = site ? site->oauth2.identifier : "";
+    const std::string redirect_secret     = site ? site->oauth2.secret     : "";
+    const std::string redirect_callback   = site ? site->oauth2.callback   : "";
+    const std::string redirect_err        = site ? site->oauth2.error      : "";
+    const std::string redirect_debug      = site ? site->oauth2.debug      : "";
+
+    static const std::vector<std::string> kResponseTypes{"code", "token"};
+    static const std::vector<std::string> kAccessTypes{"online", "offline"};
+    static const std::vector<std::string> kPrompts{
+        "none", "signin", "secret", "consent", "select_account"};
+
+    std::vector<std::string> valid, invalid;
+
+    if (action == "authorize" || action == "auth") {
+
+        const auto& response_type = req.param("response_type");
+        const auto& client_id     = req.param("client_id");
+        const auto& access_type   = req.param("access_type");
+        const auto& redirect_uri  = req.param("redirect_uri");
+        const auto& scope         = req.param("scope");
+        const auto& state         = req.param("state");
+        const auto& prompt        = req.param("prompt");
+
+        if (redirect_uri.empty()) {
+            redirect_error(resp, redirect_err, 400, "invalid_request",
+                           "Parameter value redirect_uri cannot be empty.");
+            return;
+        }
+
+        auto* app = providers_.find_by_client_id(client_id);
+        if (!app) {
+            redirect_error(resp, redirect_err, 401, "invalid_client",
+                           "The OAuth client was not found.");
+            return;
+        }
+
+        // Validate redirect_uri
+        bool redirect_ok = false;
+        for (const auto& uri : app->redirect_uris) {
+            if (uri == redirect_uri) { redirect_ok = true; break; }
+        }
+        if (!redirect_ok) {
+            redirect_error(resp, redirect_err, 400, "invalid_request",
+                           fmt::format("Invalid parameter value for redirect_uri: "
+                                       "Non-public domains not allowed: {}",
+                                       redirect_uri));
+            return;
+        }
+
+        // Validate response_type
+        parse_string_list(response_type, kResponseTypes, valid, invalid);
+        if (!invalid.empty()) {
+            redirect_error(resp, redirect_err, 400, "unsupported_response_type",
+                           fmt::format("Some requested response type were invalid: "
+                                       "{{valid=[{}], invalid=[{}]}}",
+                                       join_strings(valid, ", "),
+                                       join_strings(invalid, ", ")));
+            return;
+        }
+
+        // Validate access_type
+        auto access_types = kAccessTypes;
+        if (response_type == "token")
+            access_types.clear();
+
+        if (!access_type.empty()) {
+            bool at_ok = false;
+            for (const auto& at : access_types) {
+                if (at == access_type) { at_ok = true; break; }
+            }
+            if (!at_ok) {
+                redirect_error(resp, redirect_err, 400, "invalid_request",
+                               fmt::format("Invalid access_type: {}", access_type));
+                return;
+            }
+        }
+
+        // Validate scope
+        parse_string_list(scope, app->scopes, valid, invalid);
+        if (!invalid.empty()) {
+            redirect_error(resp, redirect_err, 400, "invalid_scope",
+                           fmt::format("Some requested scopes were invalid: "
+                                       "{{valid=[{}], invalid=[{}]}}",
+                                       join_strings(valid, ", "),
+                                       join_strings(invalid, ", ")));
+            return;
+        }
+
+        // Validate prompt
+        parse_string_list(prompt, kPrompts, valid, invalid);
+        if (!invalid.empty()) {
+            redirect_error(resp, redirect_err, 400, "unsupported_prompt_type",
+                           fmt::format("Some requested prompt type were invalid: "
+                                       "{{valid=[{}], invalid=[{}]}}",
+                                       join_strings(valid, ", "),
+                                       join_strings(invalid, ", ")));
+            return;
+        }
+
+        // Build redirect to login page
+        auto location = (prompt == "secret") ? redirect_secret : redirect_identifier;
+
+        location += fmt::format("?client_id={}&response_type={}", client_id, response_type);
+
+        if (!redirect_uri.empty())
+            location += "&redirect_uri=" + url_encode(redirect_uri);
+        if (!access_type.empty())
+            location += "&access_type=" + access_type;
+        if (!scope.empty())
+            location += "&scope=" + url_encode(scope);
+        if (!prompt.empty())
+            location += "&prompt=" + url_encode(prompt);
+        if (!state.empty())
+            location += "&state=" + url_encode(state);
+
+        redirect(resp, location);
+
+    } else if (action == "code") {
+
+        const auto& code  = req.param("code");
+        const auto& error = req.param("error");
+
+        if (code.empty()) {
+            redirect_error(resp, redirect_err, 400, "invalid_request",
+                           "Parameter \"code\" not found.");
+            return;
+        }
+
+        if (!error.empty()) {
+            int error_code = 400;
+            try { error_code = std::stoi(code); } catch (...) {}
+            redirect_error(resp, redirect_err, error_code, error,
+                           req.param("error_description"));
+            return;
+        }
+
+        const auto& state = req.param("state");
+        auto provider_name = extract_provider(req.path);
+        if (provider_name.empty())
+            provider_name = "default";
+
+        auto* app = providers_.find(provider_name, WEB_APP);
+        if (!app) {
+            redirect_error(resp, redirect_err, 400, "invalid_request",
+                           fmt::format("Provider \"{}\" not found.", provider_name));
+            return;
+        }
+
+        auto conn = std::static_pointer_cast<HttpConnection>(req.connection_ctx);
+        resp.set_deferred(true);
+
+        auto redir = (state == "debug") ? redirect_debug : redirect_callback;
+        auto agent = get_user_agent(req, "AuthServer/2.0");
+        auto real_ip = get_real_ip(req);
+        auto full_origin = get_protocol(req) + "://" + host;
+        fetch_access_token(conn, *app, code, full_origin,
+                           redir, redirect_err, agent, real_ip);
+        return;
+
+    } else if (action == "callback") {
+
+        redirect(resp, redirect_callback);
+
+    } else if (action == "identifier") {
+
+        do_identifier(req, resp);
+        return;
+
+    } else {
+        resp.set_status(HttpStatus::not_found)
+            .set_body("", "text/plain");
+        return;
+    }
+}
+
+// ─── do_post ────────────────────────────────────────────────────────────────
+
+void AuthServer::do_post(const HttpRequest& req, HttpResponse& resp)
+{
+    const auto action = extract_action(req.path);
+
+    if (action == "token") {
+        do_token(req, resp);
+    } else if (action == "identifier") {
+        do_identifier(req, resp);
+    } else {
+        reply_oauth2_error(resp, HttpStatus::not_found,
+                           "invalid_request", "Not found.");
+    }
+}
+
+// ─── do_token ───────────────────────────────────────────────────────────────
+
+void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
+{
+    auto json = content_to_json(req);
+
+    const auto grant_type    = json.value("grant_type", "");
+    const auto client_id     = json.value("client_id", "");
+    const auto client_secret = json.value("client_secret", "");
+    const auto redirect_uri  = json.value("redirect_uri", "");
+
+    std::string auth_username;
+    std::string auth_password;
+
+    if (grant_type != "urn:ietf:params:oauth:grant-type:jwt-bearer") {
+
+        const auto auth_header = req.header("Authorization");
+        const auto origin = get_origin(req);
+
+        if (auth_header.empty()) {
+            auth_username = client_id;
+            auth_password = client_secret;
+        } else {
+            auto auth = parse_authorization(auth_header);
+            if (auth.schema != Authorization::Schema::basic) {
+                reply_oauth2_error(resp, HttpStatus::bad_request,
+                                   "invalid_request", "Invalid authorization schema.");
+                return;
+            }
+            auth_username = std::move(auth.username);
+            auth_password = std::move(auth.password);
+        }
+
+        if (auth_username.empty()) {
+            if (grant_type != "password") {
+                reply_oauth2_error(resp, HttpStatus::bad_request,
+                                   "invalid_request",
+                                   "Parameter value client_id cannot be empty.");
+                return;
+            }
+            // Default to the web app's client_id
+            auto* default_app = providers_.find_default(WEB_APP);
+            if (default_app)
+                auth_username = default_app->client_id;
+        }
+
+        if (auth_password.empty()) {
+            auto* app = providers_.find_by_client_id(auth_username);
+            if (app && (app->name == WEB_APP || app->name == SVC_APP)) {
+
+                // Validate redirect_uri if provided
+                if (!redirect_uri.empty()) {
+                    bool uri_ok = false;
+                    for (const auto& uri : app->redirect_uris) {
+                        if (uri == redirect_uri) { uri_ok = true; break; }
+                    }
+                    if (!uri_ok) {
+                        reply_oauth2_error(resp, HttpStatus::bad_request,
+                                           "invalid_request",
+                                           fmt::format("Invalid parameter value for redirect_uri: "
+                                                       "Non-public domains not allowed: {}",
+                                                       redirect_uri));
+                        return;
+                    }
+                }
+
+                // Validate javascript_origins
+                bool origin_ok = false;
+                for (const auto& jo : app->javascript_origins) {
+                    if (jo == origin) { origin_ok = true; break; }
+                }
+                if (!origin_ok) {
+                    reply_oauth2_error(resp, HttpStatus::bad_request,
+                                       "invalid_request",
+                                       fmt::format("The JavaScript origin in the request, {}, "
+                                                   "does not match the ones authorized for "
+                                                   "the OAuth client.", origin));
+                    return;
+                }
+
+                auth_password = app->client_secret;
+            }
+        }
+
+        if (auth_password.empty()) {
+            reply_oauth2_error(resp, HttpStatus::bad_request,
+                               "invalid_request",
+                               "Parameter value client_secret cannot be empty.");
+            return;
+        }
+    }
+
+    const auto agent = get_user_agent(req, "AuthServer/2.0");
+    const auto host  = get_real_ip(req);
+    const auto hostname = get_host(req);
+
+    auto sql = fmt::format("SELECT * FROM daemon.token({}, {}, {}::jsonb, {}, {});",
+                           pq_quote_literal(auth_username),
+                           pq_quote_literal(auth_password),
+                           pq_quote_literal(json.dump()),
+                           pq_quote_literal(agent),
+                           pq_quote_literal(host));
+
+    resp.set_deferred(true);
+    auto conn = std::static_pointer_cast<HttpConnection>(req.connection_ctx);
+
+    pool_.execute(std::move(sql),
+        // on_result
+        [conn, hostname](std::vector<PgResult> results) {
+            HttpResponse r;
+
+            if (results.empty() || !results[0].ok()) {
+                auto msg = results.empty() ? "no results"
+                                           : results[0].error_message();
+                reply_oauth2_error(r, HttpStatus::internal_server_error,
+                                   "server_error", msg);
+                conn->send_response(r);
+                return;
+            }
+
+            auto body = results[0].value(0, 0);
+
+            try {
+                auto result_json = nlohmann::json::parse(body);
+
+                // Check for OAuth2 error in PG result
+                if (result_json.contains("error")) {
+                    auto& err_obj = result_json["error"];
+                    int code = err_obj.value("code", 400);
+                    auto error = err_obj.value("error", "invalid_request");
+                    auto message = err_obj.value("message", "Invalid request.");
+                    if (code >= 10000) code = code / 100;
+                    if (code < 0) code = 400;
+
+                    auto status = error_code_to_status(code);
+                    reply_oauth2_error(r, status, error, message);
+                    conn->send_response(r);
+                    return;
+                }
+
+                auto access_token  = result_json.value("access_token", "");
+                auto refresh_token = result_json.value("refresh_token", "");
+                auto session       = result_json.value("session", "");
+
+                set_secure_cookies(r, access_token, refresh_token,
+                                   session, hostname);
+
+                r.set_status(HttpStatus::ok)
+                 .set_body(body, "application/json");
+
+            } catch (const std::exception& e) {
+                reply_oauth2_error(r, HttpStatus::internal_server_error,
+                                   "server_error", e.what());
+            }
+
+            conn->send_response(r);
+        },
+        // on_exception
+        [conn](std::string_view error) {
+            HttpResponse r;
+            reply_oauth2_error(r, HttpStatus::internal_server_error,
+                               "server_error", error);
+            conn->send_response(r);
+        });
+}
+
+// ─── do_identifier ──────────────────────────────────────────────────────────
+
+void AuthServer::do_identifier(const HttpRequest& req, HttpResponse& resp)
+{
+    auto json = content_to_json(req);
+    const auto identifier = json.value("value", "");
+
+    if (identifier.empty()) {
+        reply_oauth2_error(resp, HttpStatus::bad_request,
+                           "invalid_request", "Invalid request.");
+        return;
+    }
+
+    // Check Bearer authorization
+    const auto auth_header = req.header("Authorization");
+    auto auth = parse_authorization(auth_header);
+
+    if (auth.schema != Authorization::Schema::bearer) {
+        if (auth.schema == Authorization::Schema::basic) {
+            reply_oauth2_error(resp, HttpStatus::unauthorized,
+                               "unauthorized", "Unauthorized.");
+        } else {
+            reply_oauth2_error(resp, HttpStatus::unauthorized,
+                               "unauthorized", "Unauthorized.");
+        }
+        return;
+    }
+
+    // Verify Bearer token
+    JwtKeyResolver key_resolver = [this](std::string_view kid) {
+        return get_public_key(kid);
+    };
+
+    try {
+        verify_jwt(auth.token, providers_, key_resolver);
+    } catch (const JwtExpiredError&) {
+        reply_oauth2_error(resp, HttpStatus::forbidden,
+                           "forbidden", "Token expired.");
+        return;
+    } catch (const JwtVerificationError& e) {
+        reply_oauth2_error(resp, HttpStatus::bad_request,
+                           "invalid_request", e.what());
+        return;
+    } catch (const std::exception& e) {
+        reply_oauth2_error(resp, HttpStatus::bad_request,
+                           "invalid_request", e.what());
+        return;
+    }
+
+    auto sql = fmt::format("SELECT * FROM daemon.identifier({}, {});",
+                           pq_quote_literal(auth.token),
+                           pq_quote_literal(identifier));
+
+    resp.set_deferred(true);
+    auto conn = std::static_pointer_cast<HttpConnection>(req.connection_ctx);
+
+    pool_.execute(std::move(sql),
+        // on_result
+        [conn](std::vector<PgResult> results) {
+            HttpResponse r;
+
+            if (results.empty() || !results[0].ok()) {
+                auto msg = results.empty() ? "no results"
+                                           : results[0].error_message();
+                reply_error(r, HttpStatus::internal_server_error, msg);
+                conn->send_response(r);
+                return;
+            }
+
+            r.set_status(HttpStatus::ok)
+             .set_body(results[0].value(0, 0), "application/json");
+            conn->send_response(r);
+        },
+        // on_exception
+        [conn](std::string_view error) {
+            HttpResponse r;
+            reply_error(r, HttpStatus::internal_server_error, error);
+            conn->send_response(r);
+        });
+}
+
+// ─── External providers ─────────────────────────────────────────────────────
+
+void AuthServer::login(std::shared_ptr<HttpConnection> conn,
+                       const std::string& redir,
+                       const std::string& redir_error,
+                       const std::string& agent,
+                       const std::string& host,
+                       const std::string& origin,
+                       const nlohmann::json& token_json)
+{
+    try {
+        const auto token_type = token_json.value("token_type", "");
+        const auto id_token   = token_json.value("id_token", "");
+
+        auto auth = parse_authorization(token_type + " " + id_token);
+
+        if (auth.schema != Authorization::Schema::bearer) {
+            HttpResponse r;
+            redirect_error(r, redir_error, 401, "unauthorized_client",
+                           "Invalid token type.");
+            conn->send_response(r);
+            return;
+        }
+
+        JwtKeyResolver key_resolver = [this](std::string_view kid) {
+            return get_public_key(kid);
+        };
+
+        std::string clean_token;
+        try {
+            clean_token = verify_and_resign_jwt(auth.token, providers_, key_resolver);
+        } catch (const JwtExpiredError& e) {
+            HttpResponse r;
+            redirect_error(r, redir_error, 403, "invalid_token", e.what());
+            conn->send_response(r);
+            return;
+        } catch (const JwtVerificationError& e) {
+            HttpResponse r;
+            redirect_error(r, redir_error, 400, "invalid_token", e.what());
+            conn->send_response(r);
+            return;
+        } catch (const std::exception& e) {
+            HttpResponse r;
+            redirect_error(r, redir_error, 400, "invalid_token", e.what());
+            conn->send_response(r);
+            return;
+        }
+
+        auto sql = fmt::format("SELECT * FROM daemon.login({}, {}, {}, {});",
+                               pq_quote_literal(clean_token),
+                               pq_quote_literal(agent),
+                               pq_quote_literal(host),
+                               pq_quote_literal(origin));
+
+        pool_.execute(std::move(sql),
+            // on_result
+            [this, conn, redir, redir_error](std::vector<PgResult> results) {
+                HttpResponse r;
+
+                if (results.empty() || !results[0].ok()) {
+                    auto msg = results.empty() ? "no results"
+                                               : results[0].error_message();
+                    redirect_error(r, redir_error, 500, "server_error", msg);
+                    conn->send_response(r);
+                    return;
+                }
+
+                auto body = results[0].value(0, 0);
+
+                try {
+                    auto payload = nlohmann::json::parse(body);
+
+                    // Check for error
+                    std::string error_message;
+                    int error_code = check_pg_error(body, error_message);
+                    if (error_code != 0) {
+                        auto status = error_code_to_status(error_code);
+                        switch (status) {
+                        case HttpStatus::unauthorized:
+                            redirect_error(r, redir_error, 401, "unauthorized_client", error_message);
+                            break;
+                        case HttpStatus::forbidden:
+                            redirect_error(r, redir_error, 403, "access_denied", error_message);
+                            break;
+                        case HttpStatus::internal_server_error:
+                            redirect_error(r, redir_error, 500, "server_error", error_message);
+                            break;
+                        default:
+                            redirect_error(r, redir_error, 400, "invalid_request", error_message);
+                            break;
+                        }
+                        conn->send_response(r);
+                        return;
+                    }
+
+                    // Success: set cookies and redirect
+                    auto access_token  = payload.value("access_token", "");
+                    auto refresh_token = payload.value("refresh_token", "");
+                    auto session       = payload.value("session", "");
+                    auto token_type    = payload.value("token_type", "");
+                    auto expires_in    = payload.value("expires_in", "");
+                    auto state         = payload.value("state", "");
+
+                    // Extract domain from redirect URL (approximate)
+                    set_secure_cookies(r, access_token, refresh_token, session, "");
+
+                    // Build redirect with token info in fragment
+                    auto redirect_url = redir + "#access_token=" + access_token;
+                    if (!refresh_token.empty())
+                        redirect_url += "&refresh_token=" + url_encode(refresh_token);
+                    redirect_url += "&token_type=" + token_type;
+                    redirect_url += "&expires_in=" + expires_in;
+                    redirect_url += "&session=" + session;
+                    if (!state.empty())
+                        redirect_url += "&state=" + url_encode(state);
+
+                    redirect(r, redirect_url);
+
+                } catch (const std::exception& e) {
+                    redirect_error(r, redir_error, 500, "server_error", e.what());
+                }
+
+                conn->send_response(r);
+            },
+            // on_exception
+            [conn, redir_error](std::string_view error) {
+                HttpResponse r;
+                redirect_error(r, redir_error, 503, "temporarily_unavailable",
+                               "Temporarily unavailable.");
+                conn->send_response(r);
+                (void)error;
+            });
+
+    } catch (const std::exception& e) {
+        HttpResponse r;
+        redirect_error(r, redir_error, 500, "server_error", e.what());
+        conn->send_response(r);
+    }
+}
+
+void AuthServer::fetch_access_token(std::shared_ptr<HttpConnection> conn,
+                                    const OAuthApp& app,
+                                    std::string_view code,
+                                    const std::string& origin,
+                                    const std::string& redir,
+                                    const std::string& redir_error,
+                                    const std::string& agent,
+                                    const std::string& host)
+{
+    if (app.token_uri.empty()) {
+        HttpResponse r;
+        redirect_error(r, redir_error, 400, "invalid_request",
+                       "Parameter \"token_uri\" not found in provider configuration.");
+        conn->send_response(r);
+        return;
+    }
+
+    auto token_uri = app.token_uri;
+    if (!token_uri.empty() && token_uri[0] == '/') {
+        token_uri = origin + token_uri;
+    }
+
+    auto post_body = fmt::format(
+        "client_id={}&client_secret={}&grant_type=authorization_code&code={}&redirect_uri={}",
+        url_encode(app.client_id),
+        url_encode(app.client_secret),
+        url_encode(code),
+        url_encode(origin + "/oauth2/code/" + app.provider));
+
+    auto provider_name = app.provider;
+
+    fetch_.post(token_uri, post_body,
+        {{"Content-Type", "application/x-www-form-urlencoded"}},
+        // on_done
+        [this, conn, redir, redir_error, provider_name, agent, host, origin](FetchResponse resp) {
+            if (resp.status_code == 200) {
+                try {
+                    auto json = nlohmann::json::parse(resp.body);
+                    if (provider_name == "google") {
+                        login(conn, redir, redir_error, agent, host, origin, json);
+                    } else {
+                        // Non-Google provider: set cookies + redirect directly
+                        HttpResponse r;
+
+                        auto access_token  = json.value("access_token", "");
+                        auto refresh_token = json.value("refresh_token", "");
+                        auto session       = json.value("session", "");
+                        auto token_type    = json.value("token_type", "");
+                        auto expires_in    = json.value("expires_in", "");
+                        auto state         = json.value("state", "");
+
+                        set_secure_cookies(r, access_token, refresh_token, session, "");
+
+                        auto redirect_url = redir + "#access_token=" + access_token;
+                        if (!refresh_token.empty())
+                            redirect_url += "&refresh_token=" + url_encode(refresh_token);
+                        redirect_url += "&token_type=" + token_type;
+                        redirect_url += "&expires_in=" + expires_in;
+                        redirect_url += "&session=" + session;
+                        if (!state.empty())
+                            redirect_url += "&state=" + url_encode(state);
+
+                        redirect(r, redirect_url);
+                        conn->send_response(r);
+                    }
+                } catch (const std::exception& e) {
+                    HttpResponse r;
+                    redirect_error(r, redir_error, 500, "server_error", e.what());
+                    conn->send_response(r);
+                }
+            } else {
+                std::string error = "server_error";
+                std::string error_desc = "Token exchange failed.";
+                try {
+                    auto json = nlohmann::json::parse(resp.body);
+                    error = json.value("error", "server_error");
+                    error_desc = json.value("error_description",
+                                            "Token exchange failed.");
+                } catch (...) {}
+
+                HttpResponse r;
+                redirect_error(r, redir_error, resp.status_code, error, error_desc);
+                conn->send_response(r);
+            }
+        },
+        // on_error
+        [conn, redir_error](std::string_view error) {
+            HttpResponse r;
+            redirect_error(r, redir_error, 500, "server_error", error);
+            conn->send_response(r);
+        });
+}
+
+void AuthServer::fetch_certs(const std::string& provider_name,
+                             const std::string& cert_uri)
+{
+    if (cert_uri.empty())
+        return;
+
+    auto& cache = key_cache_[provider_name];
+    cache.status = ProviderKeyCache::Status::fetching;
+    cache.status_time = std::chrono::system_clock::now();
+
+    fetch_.get(cert_uri, {},
+        // on_done
+        [this, provider_name](FetchResponse resp) {
+            auto& cache = key_cache_[provider_name];
+            if (resp.status_code == 200) {
+                try {
+                    auto json = nlohmann::json::parse(resp.body);
+
+                    cache.keys.clear();
+
+                    // Google JWKS format: {"keys":[{"kid":"...","n":"...","e":"...", ...}]}
+                    // or simple format: {"kid":"PEM", ...}
+                    if (json.contains("keys") && json["keys"].is_array()) {
+                        for (const auto& key : json["keys"]) {
+                            if (key.contains("kid")) {
+                                auto kid = key["kid"].get<std::string>();
+                                // Store raw JSON for the key — jwt-cpp can parse JWK
+                                cache.keys[kid] = key.dump();
+                            }
+                        }
+                    } else {
+                        // Simple kid → PEM mapping
+                        for (auto& [kid, pem] : json.items()) {
+                            cache.keys[kid] = pem.get<std::string>();
+                        }
+                    }
+
+                    cache.status = ProviderKeyCache::Status::success;
+                    cache.status_time = std::chrono::system_clock::now();
+                } catch (const std::exception&) {
+                    cache.status = ProviderKeyCache::Status::failed;
+                    cache.status_time = std::chrono::system_clock::now();
+                }
+            } else {
+                cache.status = ProviderKeyCache::Status::failed;
+                cache.status_time = std::chrono::system_clock::now();
+            }
+        },
+        // on_error
+        [this, provider_name](std::string_view /*error*/) {
+            auto& cache = key_cache_[provider_name];
+            cache.status = ProviderKeyCache::Status::failed;
+            cache.status_time = std::chrono::system_clock::now();
+            // Retry sooner
+            next_heartbeat_ = std::chrono::system_clock::now() + kRetryInterval;
+        });
+}
+
+void AuthServer::fetch_providers()
+{
+    for (const auto& app : providers_.apps()) {
+        if (app.name == WEB_APP && !app.cert_uri.empty()) {
+            auto it = key_cache_.find(app.provider);
+            if (it == key_cache_.end() ||
+                it->second.status == ProviderKeyCache::Status::unknown)
+            {
+                fetch_certs(app.provider, app.cert_uri);
+            }
+        }
+    }
+}
+
+void AuthServer::check_providers()
+{
+    for (auto& [name, cache] : key_cache_) {
+        if (cache.status != ProviderKeyCache::Status::unknown) {
+            cache.status = ProviderKeyCache::Status::unknown;
+            cache.status_time = std::chrono::system_clock::now();
+        }
+    }
+}
+
+} // namespace apostol
+
+#endif // WITH_POSTGRESQL && WITH_SSL

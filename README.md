@@ -1,7 +1,7 @@
 Auth Server
 -
 
-[![ru](https://img.shields.io/badge/lang-ru-green.svg)](https://github.com/apostoldevel/module-AuthServer/blob/master/README.ru-RU.md)
+[![ru](https://img.shields.io/badge/lang-ru-green.svg)](README.ru-RU.md)
 
 **Module** for [Apostol](https://github.com/apostoldevel/apostol) + [db-platform](https://github.com/apostoldevel/db-platform) — **Apostol CRM**[^crm].
 
@@ -12,7 +12,7 @@ Description
 
 Key characteristics:
 
-* Written in C++14 using an asynchronous, non-blocking I/O model based on the **epoll** API.
+* Written in C++20 using an asynchronous, non-blocking I/O model based on the **epoll** API.
 * Implements [RFC 6749](https://tools.ietf.org/html/rfc6749) (OAuth 2.0), OpenID Connect, and [RFC 7519](https://tools.ietf.org/html/rfc7519) (JWT). Supported grant types: Authorization Code, Implicit, Resource Owner Password Credentials, Client Credentials, Token Exchange ([RFC 8693](https://tools.ietf.org/html/rfc8693)), and JWT Bearer.
 * All token issuance and session management logic runs in the database (`daemon.token`, `daemon.login`). The C++ layer handles only HTTP transport, parameter validation, JWT signature operations, and cookie management.
 * JWT verification is done locally using the `jwt-cpp` library — all 12 algorithms (HS256/384/512, RS256/384/512, ES256/384/512, PS256/384/512) are supported without a database round-trip.
@@ -21,15 +21,15 @@ Key characteristics:
 
 ### How it fits into Apostol
 
-`CAuthServer` registers itself as the handler for any request whose path starts with `/oauth2/` (see `CheckLocation`). It accepts `GET`, `POST`, and `OPTIONS`; all other HTTP methods return `405 Method Not Allowed`.
+`AuthServer` registers itself as the handler for any request whose path starts with `/oauth2/` (see `CheckLocation`). It accepts `GET`, `POST`, and `OPTIONS`; all other HTTP methods return `405 Method Not Allowed`.
 
 **GET /oauth2/{action} routing:**
 
 | Action | What C++ does | Database call |
 |--------|--------------|---------------|
-| `authorize` / `auth` | Validates `client_id`, `redirect_uri`, `response_type`, `scope`, `access_type`, `prompt` against in-memory provider config. Redirects to the login page URL from `sites.conf` (`oauth2.identifier` or `oauth2.secret`). | None |
+| `authorize` / `auth` | Validates `client_id`, `redirect_uri`, `response_type`, `scope`, `access_type`, `prompt` against in-memory provider config. Redirects to the login page URL from `conf/sites/*.json` (`oauth2.identifier` or `oauth2.secret`). | None |
 | `code` | Receives authorization code from external provider redirect. For external providers (e.g. Google): makes a direct C++ HTTP call to the provider's `token_uri` to exchange the code for a token, then verifies the returned JWT. | `daemon.login(token, agent, host, origin)` |
-| `callback` | Redirects to `oauth2.callback` from `sites.conf`. | None |
+| `callback` | Redirects to `oauth2.callback` from `conf/sites/*.json`. | None |
 | `identifier` | Extracts `value` from request body, checks Bearer token. | `daemon.identifier(token, value)` |
 
 **POST /oauth2/{action} routing:**
@@ -42,7 +42,7 @@ Key characteristics:
 **Token endpoint flow (`POST /oauth2/token`) step by step:**
 
 1. The worker's event loop (epoll) accepts the connection and reads the HTTP request.
-2. `CAuthServer` parses the grant type and client credentials from the request body or `Authorization: Basic` header. For the `password` grant without an explicit `client_id`, the default web application client is used automatically.
+2. `AuthServer` parses the grant type and client credentials from the request body or `Authorization: Basic` header. For the `password` grant without an explicit `client_id`, the default web application client is used automatically.
 3. For `web` and `service` applications: C++ validates `redirect_uri` and `javascript_origins` in-process against the provider configuration loaded from `conf/oauth2/` — no database query needed for these checks.
 4. It calls `daemon.token(client_id, client_secret, payload, agent, host)` asynchronously. The database handles all grant type logic: token generation, session creation, refresh tokens, token exchange, and external JWT validation.
 5. On success: C++ sets three `HttpOnly` cookies (`__Secure-AT`, `__Secure-RT` with 60-day TTL and `SameSite=None; Secure`; `SID` session cookie) and returns the JSON token response to the client.
@@ -84,9 +84,14 @@ Follow the build and installation instructions for [Apostol](https://github.com/
 Configuration
 -
 
-```ini
-[module/AuthServer]
-enable=true
+```json
+{
+  "modules": {
+    "AuthServer": {
+      "enabled": true
+    }
+  }
+}
 ```
 
 Quick Start
@@ -317,7 +322,7 @@ Authorization Code is one of the most commonly used grant types because it is we
 | scope | `scope` | **Recommended.** A space-separated list of scopes that define the resources your application can access on behalf of the user. |
 | access_type | `access_type` | **Recommended.** Specifies whether your application can refresh access tokens when the user is not present in the browser. Accepted values: `online` (default) and `offline`. |
 | state | `state` | **Recommended.** A set of random characters that will be returned by the server to the client (used to protect against replay attacks). |
-| prompt | `prompt` | **Optional.** Controls the login page shown to the user. Accepted values: `signin` (default), `secret` (password page), `consent`, `select_account`, `none`. When `secret` is specified, the user is redirected to the password-entry page (`oauth2.secret` in `sites.conf`) instead of the identifier page. |
+| prompt | `prompt` | **Optional.** Controls the login page shown to the user. Accepted values: `signin` (default), `secret` (password page), `consent`, `select_account`, `none`. When `secret` is specified, the user is redirected to the password-entry page (`oauth2.secret` in `conf/sites/*.json`) instead of the identifier page. |
 
 **Example request:**
 ```http request

@@ -3,12 +3,12 @@
 Сервер авторизации
 -
 
-**Модуль** для [Apostol](https://github.com/apostoldevel/apostol) + [db-platform](https://github.com/apostoldevel/db-platform) — **Apostol CRM**[^crm].
+**Модуль** для **Apostol CRM**[^crm].
 
 Описание
 -
 
-**Сервер авторизации** — C++-модуль сервера OAuth 2.0 для фреймворка [Апостол](https://github.com/apostoldevel/apostol). Работает внутри рабочих процессов Апостола и обрабатывает все запросы, путь которых начинается с `/oauth2/`.
+**Сервер авторизации** — C++-модуль сервера OAuth 2.0 для фреймворка [Апостол (C++20)](https://github.com/apostoldevel/libapostol). Работает внутри рабочих процессов Апостола и обрабатывает все запросы, путь которых начинается с `/oauth2/`.
 
 Ключевые характеристики:
 
@@ -671,6 +671,6 @@ assertion=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[сокращено для кра
 Установка
 -
 
-Следуйте указаниям по сборке и установке [Апостол](https://github.com/apostoldevel/apostol).
+Следуйте указаниям по сборке и установке [Апостол (C++20)](https://github.com/apostoldevel/libapostol#build-and-installation).
 
-[^crm]: **Apostol CRM** — абстрактный термин, а не самостоятельный продукт. Он обозначает любой проект, в котором совместно используются фреймворк [Apostol](https://github.com/apostoldevel/apostol) (C++) и [db-platform](https://github.com/apostoldevel/db-platform) через специально разработанные модули и процессы. Каждый фреймворк можно использовать независимо; вместе они образуют полноценную backend-платформу.
+[^crm]: **Apostol CRM** — шаблон-проект построенный на фреймворках [A-POST-OL](https://github.com/apostoldevel/libapostol) (C++20) и [PostgreSQL Framework for Backend Development](https://github.com/apostoldevel/db-platform).

@@ -8,7 +8,7 @@ Auth Server
 Description
 -
 
-**Auth Server** is a C++ OAuth 2.0 Authorization Server module for the [Апостол (C++20)](https://github.com/apostoldevel/libapostol) framework. It runs inside Apostol worker processes and handles all requests under the `/oauth2/` path prefix.
+**Auth Server** is a C++ OAuth 2.0 Authorization Server module for the [Apostol (C++20)](https://github.com/apostoldevel/libapostol) framework. It runs inside Apostol worker processes and handles all requests under the `/oauth2/` path prefix.
 
 Key characteristics:
 
@@ -671,6 +671,6 @@ Configuration
 Installation
 -
 
-Follow the build and installation instructions for [Апостол (C++20)](https://github.com/apostoldevel/libapostol#build-and-installation).
+Follow the build and installation instructions for [Apostol (C++20)](https://github.com/apostoldevel/libapostol#build-and-installation).
 
-[^crm]: **Apostol CRM** — шаблон-проект построенный на фреймворках [A-POST-OL](https://github.com/apostoldevel/libapostol) (C++20) и [PostgreSQL Framework for Backend Development](https://github.com/apostoldevel/db-platform).
+[^crm]: **Apostol CRM** — a template project built on the [A-POST-OL](https://github.com/apostoldevel/libapostol) (C++20) and [PostgreSQL Framework for Backend Development](https://github.com/apostoldevel/db-platform) frameworks.

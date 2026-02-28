@@ -1,7 +1,7 @@
+[![ru](https://img.shields.io/badge/lang-ru-green.svg)](README.ru-RU.md)
+
 Auth Server
 -
-
-[![ru](https://img.shields.io/badge/lang-ru-green.svg)](README.ru-RU.md)
 
 **Module** for [Apostol](https://github.com/apostoldevel/apostol) + [db-platform](https://github.com/apostoldevel/db-platform) — **Apostol CRM**[^crm].
 
@@ -75,24 +75,6 @@ All authentication state lives in the database — the C++ module handles only H
 | Users / passwords | `admin` | User accounts, credential validation |
 
 All grant type logic (token issuance, refresh, exchange, validation) is implemented as PL/pgSQL functions called by the module. Provider public keys are fetched from external URLs and cached locally by the C++ module (refreshed every 30 minutes).
-
-Installation
--
-
-Follow the build and installation instructions for [Apostol](https://github.com/apostoldevel/apostol) + [db-platform](https://github.com/apostoldevel/db-platform) — **Apostol CRM**[^crm].
-
-Configuration
--
-
-```json
-{
-  "modules": {
-    "AuthServer": {
-      "enabled": true
-    }
-  }
-}
-```
 
 Quick Start
 -
@@ -672,5 +654,23 @@ client_secret=YOUR-CLIENT-SECRET&
 grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&
 assertion=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[abbreviated for brevity].NorYsi-Ht826HUFCEArVZ60_dEUmYiJYXubnTyweIMg
 ```
+
+Configuration
+-
+
+```json
+{
+  "modules": {
+    "AuthServer": {
+      "enabled": true
+    }
+  }
+}
+```
+
+Installation
+-
+
+Follow the build and installation instructions for [Apostol](https://github.com/apostoldevel/apostol) + [db-platform](https://github.com/apostoldevel/db-platform) — **Apostol CRM**[^crm].
 
 [^crm]: **Apostol CRM** is an abstract term, not a standalone product. It refers to any project that uses both the [Apostol](https://github.com/apostoldevel/apostol) C++ framework and [db-platform](https://github.com/apostoldevel/db-platform) together through purpose-built modules and processes. Each framework can be used independently; combined, they form a full-stack backend platform.

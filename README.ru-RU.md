@@ -1,7 +1,7 @@
+[![en](https://img.shields.io/badge/lang-en-green.svg)](README.md)
+
 Сервер авторизации
 -
-
-[![en](https://img.shields.io/badge/lang-en-green.svg)](README.md)
 
 **Модуль** для [Apostol](https://github.com/apostoldevel/apostol) + [db-platform](https://github.com/apostoldevel/db-platform) — **Apostol CRM**[^crm].
 
@@ -75,24 +75,6 @@ AuthServer тесно связан с модулями **`oauth2`** и **`admin`
 | Пользователи / пароли | `admin` | Учётные записи пользователей, проверка учётных данных |
 
 Вся логика grant-типов (выдача, обновление, обмен и проверка токенов) реализована в виде PL/pgSQL-функций, вызываемых модулем. Открытые ключи провайдеров загружаются с внешних URL и кэшируются локально в C++-модуле (обновляются каждые 30 минут).
-
-Установка
--
-
-Следуйте указаниям по сборке и установке [Апостол](https://github.com/apostoldevel/apostol).
-
-Настройка
--
-
-```json
-{
-  "modules": {
-    "AuthServer": {
-      "enabled": true
-    }
-  }
-}
-```
 
 Быстрый старт
 -
@@ -672,5 +654,23 @@ client_secret=YOUR-CLIENT-SECRET&
 grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&
 assertion=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[сокращено для краткости].NorYsi-Ht826HUFCEArVZ60_dEUmYiJYXubnTyweIMg
 ```
+
+Настройка
+-
+
+```json
+{
+  "modules": {
+    "AuthServer": {
+      "enabled": true
+    }
+  }
+}
+```
+
+Установка
+-
+
+Следуйте указаниям по сборке и установке [Апостол](https://github.com/apostoldevel/apostol).
 
 [^crm]: **Apostol CRM** — абстрактный термин, а не самостоятельный продукт. Он обозначает любой проект, в котором совместно используются фреймворк [Apostol](https://github.com/apostoldevel/apostol) (C++) и [db-platform](https://github.com/apostoldevel/db-platform) через специально разработанные модули и процессы. Каждый фреймворк можно использовать независимо; вместе они образуют полноценную backend-платформу.

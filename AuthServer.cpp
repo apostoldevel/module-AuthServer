@@ -568,44 +568,58 @@ void AuthServer::do_identifier(const HttpRequest& req, HttpResponse& resp)
         return;
     }
 
-    // Check Bearer authorization
+    // Check authorization: Bearer JWT or Session+Secret headers
     const auto auth_header = req.header("Authorization");
-    auto auth = parse_authorization(auth_header);
+    std::string auth_token;
 
-    if (auth.schema != Authorization::Schema::bearer) {
-        if (auth.schema == Authorization::Schema::basic) {
+    if (auth_header.empty()) {
+        // Fallback: Session + Secret headers (inter-service auth)
+        const auto session_id = req.header("Session");
+        const auto secret     = req.header("Secret");
+
+        if (session_id.empty() || secret.empty()) {
             reply_oauth2_error(resp, HttpStatus::unauthorized,
                                "unauthorized", "Unauthorized.");
-        } else {
-            reply_oauth2_error(resp, HttpStatus::unauthorized,
-                               "unauthorized", "Unauthorized.");
+            return;
         }
-        return;
-    }
 
-    // Verify Bearer token
-    JwtKeyResolver key_resolver = [this](std::string_view kid) {
-        return get_public_key(kid);
-    };
+        // Session-based auth goes through daemon.identifier with session token
+        auth_token = session_id;
+    } else {
+        auto auth = parse_authorization(auth_header);
 
-    try {
-        verify_jwt(auth.token, providers_, key_resolver);
-    } catch (const JwtExpiredError&) {
-        reply_oauth2_error(resp, HttpStatus::forbidden,
-                           "forbidden", "Token expired.");
-        return;
-    } catch (const JwtVerificationError& e) {
-        reply_oauth2_error(resp, HttpStatus::bad_request,
-                           "invalid_request", e.what());
-        return;
-    } catch (const std::exception& e) {
-        reply_oauth2_error(resp, HttpStatus::bad_request,
-                           "invalid_request", e.what());
-        return;
+        if (auth.schema != Authorization::Schema::bearer) {
+            reply_oauth2_error(resp, HttpStatus::unauthorized,
+                               "unauthorized", "Unauthorized.");
+            return;
+        }
+
+        // Verify Bearer token
+        JwtKeyResolver key_resolver = [this](std::string_view kid) {
+            return get_public_key(kid);
+        };
+
+        try {
+            verify_jwt(auth.token, providers_, key_resolver);
+        } catch (const JwtExpiredError&) {
+            reply_oauth2_error(resp, HttpStatus::forbidden,
+                               "forbidden", "Token expired.");
+            return;
+        } catch (const JwtVerificationError& e) {
+            reply_oauth2_error(resp, HttpStatus::bad_request,
+                               "invalid_request", e.what());
+            return;
+        } catch (const std::exception& e) {
+            reply_oauth2_error(resp, HttpStatus::bad_request,
+                               "invalid_request", e.what());
+            return;
+        }
+
+        auth_token = std::move(auth.token);
     }
 
     auto sql = fmt::format("SELECT * FROM daemon.identifier({}, {});",
-                           pq_quote_literal(auth.token),
+                           pq_quote_literal(auth_token),
                            pq_quote_literal(identifier));
 
     resp.set_deferred(true);
@@ -646,6 +660,12 @@ void AuthServer::login(std::shared_ptr<HttpConnection> conn,
                        const std::string& origin,
                        const nlohmann::json& token_json)
 {
+    // Extract hostname from origin (e.g., "https://example.com" → "example.com")
+    std::string hostname;
+    auto scheme_end = origin.find("://");
+    hostname = (scheme_end != std::string::npos)
+             ? origin.substr(scheme_end + 3) : origin;
+
     try {
         const auto token_type = token_json.value("token_type", "");
         const auto id_token   = token_json.value("id_token", "");
@@ -692,7 +712,7 @@ void AuthServer::login(std::shared_ptr<HttpConnection> conn,
 
         pool_.execute(std::move(sql),
             // on_result
-            [this, conn, redir, redir_error](std::vector<PgResult> results) {
+            [this, conn, redir, redir_error, hostname](std::vector<PgResult> results) {
                 HttpResponse r;
 
                 if (results.empty() || !results[0].ok()) {
@@ -739,8 +759,7 @@ void AuthServer::login(std::shared_ptr<HttpConnection> conn,
                     auto expires_in    = payload.value("expires_in", "");
                     auto state         = payload.value("state", "");
 
-                    // Extract domain from redirect URL (approximate)
-                    set_secure_cookies(r, access_token, refresh_token, session, "");
+                    set_secure_cookies(r, access_token, refresh_token, session, hostname);
 
                     // Build redirect with token info in fragment
                     auto redirect_url = redir + "#access_token=" + access_token;
@@ -811,6 +830,12 @@ void AuthServer::fetch_access_token(std::shared_ptr<HttpConnection> conn,
         {{"Content-Type", "application/x-www-form-urlencoded"}},
         // on_done
         [this, conn, redir, redir_error, provider_name, agent, host, origin](FetchResponse resp) {
+            // Extract hostname from origin for cookie domain
+            std::string hostname;
+            auto scheme_end = origin.find("://");
+            hostname = (scheme_end != std::string::npos)
+                     ? origin.substr(scheme_end + 3) : origin;
+
             if (resp.status_code == 200) {
                 try {
                     auto json = nlohmann::json::parse(resp.body);
@@ -827,7 +852,7 @@ void AuthServer::fetch_access_token(std::shared_ptr<HttpConnection> conn,
                         auto expires_in    = json.value("expires_in", "");
                         auto state         = json.value("state", "");
 
-                        set_secure_cookies(r, access_token, refresh_token, session, "");
+                        set_secure_cookies(r, access_token, refresh_token, session, hostname);
 
                         auto redirect_url = redir + "#access_token=" + access_token;
                         if (!refresh_token.empty())

@@ -41,7 +41,11 @@ static constexpr const char* SVC_APP   = "service";
 
 static constexpr auto kHeartbeatInterval = std::chrono::minutes(30);
 static constexpr auto kRetryInterval     = std::chrono::seconds(5);
-static constexpr int  kCookieMaxAge      = 60 * 86400; // 60 days
+
+static constexpr const char* kCookieAT  = "__Secure-AT";
+static constexpr const char* kCookieRT  = "__Secure-RT";
+static constexpr const char* kCookieSID = "SID";
+static constexpr int kCookieMaxAge      = 60 * 86400; // 60 days
 
 // ─── Construction ────────────────────────────────────────────────────────────
 
@@ -175,15 +179,15 @@ void AuthServer::set_secure_cookies(HttpResponse& resp,
                                     std::string_view domain)
 {
     if (!access_token.empty())
-        resp.set_cookie("__Secure-AT", access_token, "/", kCookieMaxAge,
+        resp.set_cookie(kCookieAT, access_token, "/", kCookieMaxAge,
                         true, "None", true, domain);
 
     if (!refresh_token.empty())
-        resp.set_cookie("__Secure-RT", refresh_token, "/", kCookieMaxAge,
+        resp.set_cookie(kCookieRT, refresh_token, "/", kCookieMaxAge,
                         true, "None", true, domain);
 
     if (!session.empty())
-        resp.set_cookie("SID", session, "/", kCookieMaxAge);
+        resp.set_cookie(kCookieSID, session, "/", kCookieMaxAge);
 }
 
 // ─── JWT ────────────────────────────────────────────────────────────────────
@@ -448,23 +452,16 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
                 // allowed_ips guards the no-client_id shortcut by peer_ip
                 // (who connected to our socket — nginx or direct client).
                 // Default: loopback + private networks (RFC 1918).
-                static const std::vector<std::string> default_allowed_ips = {
-                    "127.0.0.1", "::1",
-                    "10.", "172.16.", "172.17.", "172.18.", "172.19.",
-                    "172.20.", "172.21.", "172.22.", "172.23.",
-                    "172.24.", "172.25.", "172.26.", "172.27.",
-                    "172.28.", "172.29.", "172.30.", "172.31.",
-                    "192.168."
-                };
-                const auto& whitelist = default_app->allowed_ips.empty()
-                    ? default_allowed_ips
-                    : default_app->allowed_ips;
                 const auto& peer = req.peer_ip;
                 bool ip_ok = false;
-                for (const auto& entry : whitelist) {
-                    if (peer == entry || peer.starts_with(entry)) {
-                        ip_ok = true;
-                        break;
+                if (default_app->allowed_ips.empty()) {
+                    ip_ok = is_private_ip(peer);
+                } else {
+                    for (const auto& entry : default_app->allowed_ips) {
+                        if (peer == entry || peer.starts_with(entry)) {
+                            ip_ok = true;
+                            break;
+                        }
                     }
                 }
                 if (!ip_ok) {

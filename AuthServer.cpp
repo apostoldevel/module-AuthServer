@@ -187,7 +187,8 @@ void AuthServer::set_secure_cookies(HttpResponse& resp,
                         true, "None", true, domain);
 
     if (!session.empty())
-        resp.set_cookie(kCookieSID, session, "/", kCookieMaxAge);
+        resp.set_cookie(kCookieSID, session, "/", kCookieMaxAge,
+                        true, "Lax", true);
 }
 
 // ─── JWT ────────────────────────────────────────────────────────────────────
@@ -612,13 +613,8 @@ void AuthServer::do_identifier(const HttpRequest& req, HttpResponse& resp)
     auto auth = parse_authorization(auth_header);
 
     if (auth.schema != Authorization::Schema::bearer) {
-        if (auth.schema == Authorization::Schema::basic) {
-            reply_oauth2_error(resp, HttpStatus::unauthorized,
-                               "unauthorized", "Unauthorized.");
-        } else {
-            reply_oauth2_error(resp, HttpStatus::unauthorized,
-                               "unauthorized", "Unauthorized.");
-        }
+        reply_oauth2_error(resp, HttpStatus::unauthorized,
+                           "unauthorized", "Unauthorized.");
         return;
     }
 

@@ -25,12 +25,27 @@ static std::string join_strings(const std::vector<std::string>& v, std::string_v
     return result;
 }
 
+// Extract a JSON value as string regardless of its actual type (number → string).
+static std::string json_string(const nlohmann::json& j, const char* key)
+{
+    auto it = j.find(key);
+    if (it == j.end() || it->is_null())
+        return {};
+    if (it->is_string())
+        return it->get<std::string>();
+    return it->dump();   // number, bool, etc. → their textual representation
+}
+
 static constexpr const char* WEB_APP   = "web";
 static constexpr const char* SVC_APP   = "service";
 
 static constexpr auto kHeartbeatInterval = std::chrono::minutes(30);
 static constexpr auto kRetryInterval     = std::chrono::seconds(5);
-static constexpr int  kCookieMaxAge      = 60 * 86400; // 60 days
+
+static constexpr const char* kCookieAT  = "__Secure-AT";
+static constexpr const char* kCookieRT  = "__Secure-RT";
+static constexpr const char* kCookieSID = "SID";
+static constexpr int kCookieMaxAge      = 60 * 86400; // 60 days
 
 // ─── Construction ────────────────────────────────────────────────────────────
 
@@ -164,15 +179,16 @@ void AuthServer::set_secure_cookies(HttpResponse& resp,
                                     std::string_view domain)
 {
     if (!access_token.empty())
-        resp.set_cookie("__Secure-AT", access_token, "/", kCookieMaxAge,
+        resp.set_cookie(kCookieAT, access_token, "/", kCookieMaxAge,
                         true, "None", true, domain);
 
     if (!refresh_token.empty())
-        resp.set_cookie("__Secure-RT", refresh_token, "/", kCookieMaxAge,
+        resp.set_cookie(kCookieRT, refresh_token, "/", kCookieMaxAge,
                         true, "None", true, domain);
 
     if (!session.empty())
-        resp.set_cookie("SID", session, "/", kCookieMaxAge);
+        resp.set_cookie(kCookieSID, session, "/", kCookieMaxAge,
+                        true, "Lax", true);
 }
 
 // ─── JWT ────────────────────────────────────────────────────────────────────
@@ -429,10 +445,34 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
                                    "Parameter value client_id cannot be empty.");
                 return;
             }
-            // Default to the web app's client_id
+            // Default to the web app's client_id (client_id omitted by browser
+            // to avoid exposing client_secret in DevTools).  When allowed_ips
+            // is configured, only requests from those IPs may use this shortcut.
             auto* default_app = providers_.find_default(WEB_APP);
-            if (default_app)
+            if (default_app) {
+                // allowed_ips guards the no-client_id shortcut by peer_ip
+                // (who connected to our socket — nginx or direct client).
+                // Default: loopback + private networks (RFC 1918).
+                const auto& peer = req.peer_ip;
+                bool ip_ok = false;
+                if (default_app->allowed_ips.empty()) {
+                    ip_ok = is_private_ip(peer);
+                } else {
+                    for (const auto& entry : default_app->allowed_ips) {
+                        if (peer == entry || peer.starts_with(entry)) {
+                            ip_ok = true;
+                            break;
+                        }
+                    }
+                }
+                if (!ip_ok) {
+                    reply_oauth2_error(resp, HttpStatus::bad_request,
+                                       "invalid_request",
+                                       "Parameter value client_id cannot be empty.");
+                    return;
+                }
                 auth_username = default_app->client_id;
+            }
         }
 
         if (auth_password.empty()) {
@@ -752,14 +792,14 @@ void AuthServer::login(std::shared_ptr<HttpConnection> conn,
                     }
 
                     // Success: set cookies and redirect
-                    auto access_token  = payload.value("access_token", "");
-                    auto refresh_token = payload.value("refresh_token", "");
-                    auto session       = payload.value("session", "");
-                    auto token_type    = payload.value("token_type", "");
-                    auto expires_in    = payload.value("expires_in", "");
-                    auto state         = payload.value("state", "");
+                    auto access_token  = json_string(payload, "access_token");
+                    auto refresh_token = json_string(payload, "refresh_token");
+                    auto session       = json_string(payload, "session");
+                    auto token_type    = json_string(payload, "token_type");
+                    auto expires_in    = json_string(payload, "expires_in");
+                    auto state         = json_string(payload, "state");
 
-                    set_secure_cookies(r, access_token, refresh_token, session, hostname);
+                    set_secure_cookies(r, access_token, refresh_token, session, "");
 
                     // Build redirect with token info in fragment
                     auto redirect_url = redir + "#access_token=" + access_token;
@@ -845,12 +885,12 @@ void AuthServer::fetch_access_token(std::shared_ptr<HttpConnection> conn,
                         // Non-Google provider: set cookies + redirect directly
                         HttpResponse r;
 
-                        auto access_token  = json.value("access_token", "");
-                        auto refresh_token = json.value("refresh_token", "");
-                        auto session       = json.value("session", "");
-                        auto token_type    = json.value("token_type", "");
-                        auto expires_in    = json.value("expires_in", "");
-                        auto state         = json.value("state", "");
+                        auto access_token  = json_string(json, "access_token");
+                        auto refresh_token = json_string(json, "refresh_token");
+                        auto session       = json_string(json, "session");
+                        auto token_type    = json_string(json, "token_type");
+                        auto expires_in    = json_string(json, "expires_in");
+                        auto state         = json_string(json, "state");
 
                         set_secure_cookies(r, access_token, refresh_token, session, hostname);
 

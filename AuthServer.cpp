@@ -167,6 +167,12 @@ void AuthServer::redirect_error(HttpResponse& resp, std::string_view location,
                                 int code, std::string_view error,
                                 std::string_view message)
 {
+    if (location.empty()) {
+        // No site config for this host — return JSON error instead of a relative
+        // redirect that would loop back to the same handler.
+        reply_oauth2_error(resp, error_code_to_status(code), error, message);
+        return;
+    }
     auto url = fmt::format("{}?code={}&error={}&error_description={}",
                            location, code, error, url_encode(message));
     redirect(resp, url);
@@ -336,17 +342,16 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
         const auto& code  = req.param("code");
         const auto& error = req.param("error");
 
-        if (code.empty()) {
-            redirect_error(resp, redirect_err, 400, "invalid_request",
-                           "Parameter \"code\" not found.");
+        // Check for provider error first (e.g. Google returns ?error=...&error_description=...)
+        if (!error.empty()) {
+            redirect_error(resp, redirect_err, 400, error,
+                           req.param("error_description"));
             return;
         }
 
-        if (!error.empty()) {
-            int error_code = 400;
-            try { error_code = std::stoi(code); } catch (...) {}
-            redirect_error(resp, redirect_err, error_code, error,
-                           req.param("error_description"));
+        if (code.empty()) {
+            redirect_error(resp, redirect_err, 400, "invalid_request",
+                           "Parameter \"code\" not found.");
             return;
         }
 
@@ -535,9 +540,11 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
     resp.set_deferred(true);
     auto conn = std::static_pointer_cast<HttpConnection>(req.connection_ctx);
 
+    const bool set_cookies = (grant_type != "client_credentials");
+
     pool_.execute(std::move(sql),
         // on_result
-        [conn, hostname](std::vector<PgResult> results) {
+        [conn, hostname, set_cookies](std::vector<PgResult> results) {
             HttpResponse r;
 
             if (results.empty() || !results[0].ok()) {
@@ -573,8 +580,10 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
                 auto refresh_token = result_json.value("refresh_token", "");
                 auto session       = result_json.value("session", "");
 
-                set_secure_cookies(r, access_token, refresh_token,
-                                   session, hostname);
+                if (set_cookies) {
+                    set_secure_cookies(r, access_token, refresh_token,
+                                       session, hostname);
+                }
 
                 r.set_status(HttpStatus::ok)
                  .set_body(body, "application/json");

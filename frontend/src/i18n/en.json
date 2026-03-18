@@ -1,0 +1,59 @@
+{
+  "common": {
+    "submit": "Submit",
+    "cancel": "Cancel",
+    "back": "Back",
+    "or": "or",
+    "loading": "Loading..."
+  },
+  "login": {
+    "title": "Sign In",
+    "email": "Email or Username",
+    "password": "Password",
+    "submit": "Sign In",
+    "google": "Sign in with Google",
+    "noAccount": "Don't have an account?",
+    "register": "Create account",
+    "forgot": "Forgot password?",
+    "error": "Invalid credentials."
+  },
+  "register": {
+    "title": "Create Account",
+    "email": "Email",
+    "code": "Verification Code",
+    "password": "Password",
+    "confirmPassword": "Confirm Password",
+    "name": "Full Name",
+    "sendCode": "Send Code",
+    "verify": "Verify",
+    "submit": "Create Account",
+    "hasAccount": "Already have an account?",
+    "signIn": "Sign in",
+    "codeSent": "Verification code sent to {email}",
+    "emailExists": "This email is already registered."
+  },
+  "recover": {
+    "title": "Password Recovery",
+    "email": "Email",
+    "code": "Recovery Code",
+    "newPassword": "New Password",
+    "confirmPassword": "Confirm Password",
+    "sendCode": "Send Code",
+    "verify": "Verify",
+    "submit": "Set New Password",
+    "backToLogin": "Back to Sign In",
+    "success": "Password changed successfully."
+  },
+  "consent": {
+    "title": "Authorization Request",
+    "description": "{app} is requesting access to your account",
+    "scopeRead": "Read your profile information",
+    "allow": "Allow",
+    "deny": "Deny"
+  },
+  "error": {
+    "title": "Error",
+    "generic": "An error occurred.",
+    "backToLogin": "Back to Sign In"
+  }
+}

@@ -16,6 +16,11 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    sourcemap: false
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks: undefined  // keep it simple — single chunk for small app
+      }
+    }
   }
 })

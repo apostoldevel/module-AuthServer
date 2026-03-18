@@ -1,1 +1,7 @@
-<template><div class="page"><h2>Recover</h2></div></template>
+<template>
+  <RecoverForm />
+</template>
+
+<script setup lang="ts">
+import RecoverForm from '@/components/RecoverForm.vue'
+</script>

@@ -1,0 +1,63 @@
+{
+  "common": {
+    "submit": "Absenden",
+    "cancel": "Abbrechen",
+    "back": "Zurück",
+    "or": "oder",
+    "loading": "Laden..."
+  },
+  "login": {
+    "title": "Anmelden",
+    "email": "E-Mail oder Benutzername",
+    "password": "Passwort",
+    "submit": "Anmelden",
+    "google": "Mit Google anmelden",
+    "noAccount": "Noch kein Konto?",
+    "register": "Konto erstellen",
+    "forgot": "Passwort vergessen?",
+    "error": "Ungültige Anmeldedaten."
+  },
+  "register": {
+    "title": "Konto erstellen",
+    "email": "E-Mail",
+    "code": "Bestätigungscode",
+    "password": "Passwort",
+    "confirmPassword": "Passwort bestätigen",
+    "name": "Vollständiger Name",
+    "sendCode": "Code senden",
+    "verify": "Bestätigen",
+    "submit": "Konto erstellen",
+    "hasAccount": "Bereits ein Konto?",
+    "signIn": "Anmelden",
+    "codeSent": "Der Bestätigungscode wurde an {email} gesendet",
+    "emailExists": "Diese E-Mail ist bereits registriert."
+  },
+  "recover": {
+    "title": "Passwort wiederherstellen",
+    "email": "E-Mail",
+    "code": "Wiederherstellungscode",
+    "newPassword": "Neues Passwort",
+    "confirmPassword": "Passwort bestätigen",
+    "sendCode": "Code senden",
+    "verify": "Bestätigen",
+    "submit": "Neues Passwort festlegen",
+    "backToLogin": "Zurück zur Anmeldung",
+    "success": "Das Passwort wurde erfolgreich geändert."
+  },
+  "consent": {
+    "title": "Autorisierungsanfrage",
+    "description": "{app} fordert Zugriff auf Ihr Konto an",
+    "scopeRead": "Profilinformationen lesen",
+    "allow": "Erlauben",
+    "deny": "Ablehnen"
+  },
+  "debug": {
+    "success": "Autorisierung erfolgreich.",
+    "noData": "Keine Autorisierungsdaten empfangen."
+  },
+  "error": {
+    "title": "Fehler",
+    "generic": "Ein Fehler ist aufgetreten.",
+    "backToLogin": "Zurück zur Anmeldung"
+  }
+}

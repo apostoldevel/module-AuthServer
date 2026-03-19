@@ -5,5 +5,4 @@ export const config = {
   appTitle: import.meta.env.VITE_APP_TITLE || 'Apostol',
   appLogo: import.meta.env.VITE_APP_LOGO || '/assets/logo.svg',
   googleClientId: import.meta.env.VITE_GOOGLE_CLIENT_ID || '',
-  defaultLocale: import.meta.env.VITE_DEFAULT_LOCALE || 'en',
 } as const

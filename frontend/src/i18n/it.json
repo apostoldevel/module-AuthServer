@@ -1,0 +1,63 @@
+{
+  "common": {
+    "submit": "Invia",
+    "cancel": "Annulla",
+    "back": "Indietro",
+    "or": "o",
+    "loading": "Caricamento..."
+  },
+  "login": {
+    "title": "Accedi",
+    "email": "E-mail o nome utente",
+    "password": "Password",
+    "submit": "Accedi",
+    "google": "Accedi con Google",
+    "noAccount": "Non hai un account?",
+    "register": "Crea un account",
+    "forgot": "Password dimenticata?",
+    "error": "Credenziali non valide."
+  },
+  "register": {
+    "title": "Crea un account",
+    "email": "E-mail",
+    "code": "Codice di verifica",
+    "password": "Password",
+    "confirmPassword": "Conferma password",
+    "name": "Nome completo",
+    "sendCode": "Invia codice",
+    "verify": "Verifica",
+    "submit": "Crea un account",
+    "hasAccount": "Hai già un account?",
+    "signIn": "Accedi",
+    "codeSent": "Il codice di verifica è stato inviato a {email}",
+    "emailExists": "Questa e-mail è già registrata."
+  },
+  "recover": {
+    "title": "Recupero password",
+    "email": "E-mail",
+    "code": "Codice di recupero",
+    "newPassword": "Nuova password",
+    "confirmPassword": "Conferma password",
+    "sendCode": "Invia codice",
+    "verify": "Verifica",
+    "submit": "Imposta nuova password",
+    "backToLogin": "Torna all'accesso",
+    "success": "La password è stata modificata con successo."
+  },
+  "consent": {
+    "title": "Richiesta di autorizzazione",
+    "description": "{app} richiede l'accesso al tuo account",
+    "scopeRead": "Leggere le informazioni del tuo profilo",
+    "allow": "Consenti",
+    "deny": "Nega"
+  },
+  "debug": {
+    "success": "Autorizzazione riuscita.",
+    "noData": "Nessun dato di autorizzazione ricevuto."
+  },
+  "error": {
+    "title": "Errore",
+    "generic": "Si è verificato un errore.",
+    "backToLogin": "Torna all'accesso"
+  }
+}

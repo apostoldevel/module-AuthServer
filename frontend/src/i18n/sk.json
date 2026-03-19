@@ -1,0 +1,63 @@
+{
+  "common": {
+    "submit": "Odoslať",
+    "cancel": "Zrušiť",
+    "back": "Späť",
+    "or": "alebo",
+    "loading": "Načítavanie..."
+  },
+  "login": {
+    "title": "Prihlásenie",
+    "email": "E-mail alebo používateľské meno",
+    "password": "Heslo",
+    "submit": "Prihlásiť sa",
+    "google": "Prihlásiť sa cez Google",
+    "noAccount": "Nemáte účet?",
+    "register": "Vytvoriť účet",
+    "forgot": "Zabudli ste heslo?",
+    "error": "Neplatné prihlasovacie údaje."
+  },
+  "register": {
+    "title": "Vytvorenie účtu",
+    "email": "E-mail",
+    "code": "Overovací kód",
+    "password": "Heslo",
+    "confirmPassword": "Potvrďte heslo",
+    "name": "Celé meno",
+    "sendCode": "Odoslať kód",
+    "verify": "Overiť",
+    "submit": "Vytvoriť účet",
+    "hasAccount": "Už máte účet?",
+    "signIn": "Prihlásiť sa",
+    "codeSent": "Overovací kód bol odoslaný na {email}",
+    "emailExists": "Tento e-mail je už zaregistrovaný."
+  },
+  "recover": {
+    "title": "Obnovenie hesla",
+    "email": "E-mail",
+    "code": "Kód na obnovenie",
+    "newPassword": "Nové heslo",
+    "confirmPassword": "Potvrďte heslo",
+    "sendCode": "Odoslať kód",
+    "verify": "Overiť",
+    "submit": "Nastaviť nové heslo",
+    "backToLogin": "Späť na prihlásenie",
+    "success": "Heslo bolo úspešne zmenené."
+  },
+  "consent": {
+    "title": "Žiadosť o autorizáciu",
+    "description": "{app} žiada o prístup k vášmu účtu",
+    "scopeRead": "Čítať informácie o vašom profile",
+    "allow": "Povoliť",
+    "deny": "Zamietnuť"
+  },
+  "debug": {
+    "success": "Autorizácia prebehla úspešne.",
+    "noData": "Neboli prijaté žiadne autorizačné údaje."
+  },
+  "error": {
+    "title": "Chyba",
+    "generic": "Vyskytla sa chyba.",
+    "backToLogin": "Späť na prihlásenie"
+  }
+}

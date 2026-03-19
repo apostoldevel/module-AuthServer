@@ -7,6 +7,7 @@ export const router = createRouter({
     { path: '/register', name: 'register', component: () => import('@/pages/RegisterPage.vue') },
     { path: '/recover', name: 'recover', component: () => import('@/pages/RecoverPage.vue') },
     { path: '/authorize', name: 'authorize', component: () => import('@/pages/AuthorizePage.vue') },
+    { path: '/debug', name: 'debug', component: () => import('@/pages/DebugPage.vue') },
     { path: '/error', name: 'error', component: () => import('@/pages/ErrorPage.vue') },
     { path: '/', redirect: '/login' },
   ]

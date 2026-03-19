@@ -582,7 +582,7 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
 
                 if (set_cookies) {
                     set_secure_cookies(r, access_token, refresh_token,
-                                       session, hostname);
+                                       session, "");
                 }
 
                 r.set_status(HttpStatus::ok)
@@ -901,7 +901,7 @@ void AuthServer::fetch_access_token(std::shared_ptr<HttpConnection> conn,
                         auto expires_in    = json_string(json, "expires_in");
                         auto state         = json_string(json, "state");
 
-                        set_secure_cookies(r, access_token, refresh_token, session, hostname);
+                        set_secure_cookies(r, access_token, refresh_token, session, "");
 
                         auto redirect_url = redir + "#access_token=" + access_token;
                         if (!refresh_token.empty())

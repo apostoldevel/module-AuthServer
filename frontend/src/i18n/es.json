@@ -1,0 +1,63 @@
+{
+  "common": {
+    "submit": "Enviar",
+    "cancel": "Cancelar",
+    "back": "Atrás",
+    "or": "o",
+    "loading": "Cargando..."
+  },
+  "login": {
+    "title": "Iniciar sesión",
+    "email": "Correo electrónico o nombre de usuario",
+    "password": "Contraseña",
+    "submit": "Iniciar sesión",
+    "google": "Iniciar sesión con Google",
+    "noAccount": "¿No tienes cuenta?",
+    "register": "Crear cuenta",
+    "forgot": "¿Olvidaste tu contraseña?",
+    "error": "Credenciales no válidas."
+  },
+  "register": {
+    "title": "Crear cuenta",
+    "email": "Correo electrónico",
+    "code": "Código de verificación",
+    "password": "Contraseña",
+    "confirmPassword": "Confirmar contraseña",
+    "name": "Nombre completo",
+    "sendCode": "Enviar código",
+    "verify": "Verificar",
+    "submit": "Crear cuenta",
+    "hasAccount": "¿Ya tienes cuenta?",
+    "signIn": "Iniciar sesión",
+    "codeSent": "El código de verificación se ha enviado a {email}",
+    "emailExists": "Este correo electrónico ya está registrado."
+  },
+  "recover": {
+    "title": "Recuperación de contraseña",
+    "email": "Correo electrónico",
+    "code": "Código de recuperación",
+    "newPassword": "Nueva contraseña",
+    "confirmPassword": "Confirmar contraseña",
+    "sendCode": "Enviar código",
+    "verify": "Verificar",
+    "submit": "Establecer nueva contraseña",
+    "backToLogin": "Volver al inicio de sesión",
+    "success": "La contraseña se ha cambiado correctamente."
+  },
+  "consent": {
+    "title": "Solicitud de autorización",
+    "description": "{app} solicita acceso a tu cuenta",
+    "scopeRead": "Leer la información de tu perfil",
+    "allow": "Permitir",
+    "deny": "Denegar"
+  },
+  "debug": {
+    "success": "Autorización exitosa.",
+    "noData": "No se recibieron datos de autorización."
+  },
+  "error": {
+    "title": "Error",
+    "generic": "Se ha producido un error.",
+    "backToLogin": "Volver al inicio de sesión"
+  }
+}

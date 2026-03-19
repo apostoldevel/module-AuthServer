@@ -1,0 +1,63 @@
+{
+  "common": {
+    "submit": "Envoyer",
+    "cancel": "Annuler",
+    "back": "Retour",
+    "or": "ou",
+    "loading": "Chargement..."
+  },
+  "login": {
+    "title": "Connexion",
+    "email": "E-mail ou nom d'utilisateur",
+    "password": "Mot de passe",
+    "submit": "Se connecter",
+    "google": "Se connecter avec Google",
+    "noAccount": "Pas encore de compte ?",
+    "register": "Créer un compte",
+    "forgot": "Mot de passe oublié ?",
+    "error": "Identifiants invalides."
+  },
+  "register": {
+    "title": "Créer un compte",
+    "email": "E-mail",
+    "code": "Code de vérification",
+    "password": "Mot de passe",
+    "confirmPassword": "Confirmez le mot de passe",
+    "name": "Nom complet",
+    "sendCode": "Envoyer le code",
+    "verify": "Vérifier",
+    "submit": "Créer un compte",
+    "hasAccount": "Vous avez déjà un compte ?",
+    "signIn": "Se connecter",
+    "codeSent": "Le code de vérification a été envoyé à {email}",
+    "emailExists": "Cet e-mail est déjà enregistré."
+  },
+  "recover": {
+    "title": "Récupération du mot de passe",
+    "email": "E-mail",
+    "code": "Code de récupération",
+    "newPassword": "Nouveau mot de passe",
+    "confirmPassword": "Confirmez le mot de passe",
+    "sendCode": "Envoyer le code",
+    "verify": "Vérifier",
+    "submit": "Définir un nouveau mot de passe",
+    "backToLogin": "Retour à la connexion",
+    "success": "Le mot de passe a été modifié avec succès."
+  },
+  "consent": {
+    "title": "Demande d'autorisation",
+    "description": "{app} demande l'accès à votre compte",
+    "scopeRead": "Lire les informations de votre profil",
+    "allow": "Autoriser",
+    "deny": "Refuser"
+  },
+  "debug": {
+    "success": "Autorisation réussie.",
+    "noData": "Aucune donnée d'autorisation reçue."
+  },
+  "error": {
+    "title": "Erreur",
+    "generic": "Une erreur est survenue.",
+    "backToLogin": "Retour à la connexion"
+  }
+}

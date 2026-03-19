@@ -13,7 +13,6 @@ interface ImportMetaEnv {
   readonly VITE_APP_TITLE: string
   readonly VITE_APP_LOGO: string
   readonly VITE_GOOGLE_CLIENT_ID: string
-  readonly VITE_DEFAULT_LOCALE: string
 }
 
 interface ImportMeta {

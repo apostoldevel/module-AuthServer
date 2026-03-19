@@ -20,13 +20,13 @@ defineProps<{ loading?: boolean }>()
 function googleLogin() {
   const params = new URLSearchParams({
     client_id: config.googleClientId,
-    redirect_uri: `${config.apiHost}/oauth2/code/google`,
+    redirect_uri: `${config.apiHost || window.location.origin}/oauth2/code/google`,
     scope: 'openid profile email',
     response_type: 'code',
     access_type: 'online',
     include_granted_scopes: 'true',
     prompt: 'select_account',
-    state: 'SignIn',
+    state: 'debug',
   })
   window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params}`
 }

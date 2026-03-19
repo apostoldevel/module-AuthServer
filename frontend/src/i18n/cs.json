@@ -1,0 +1,63 @@
+{
+  "common": {
+    "submit": "Odeslat",
+    "cancel": "Zrušit",
+    "back": "Zpět",
+    "or": "nebo",
+    "loading": "Načítání..."
+  },
+  "login": {
+    "title": "Přihlášení",
+    "email": "E-mail nebo uživatelské jméno",
+    "password": "Heslo",
+    "submit": "Přihlásit se",
+    "google": "Přihlásit se přes Google",
+    "noAccount": "Nemáte účet?",
+    "register": "Vytvořit účet",
+    "forgot": "Zapomněli jste heslo?",
+    "error": "Neplatné přihlašovací údaje."
+  },
+  "register": {
+    "title": "Vytvoření účtu",
+    "email": "E-mail",
+    "code": "Ověřovací kód",
+    "password": "Heslo",
+    "confirmPassword": "Potvrďte heslo",
+    "name": "Celé jméno",
+    "sendCode": "Odeslat kód",
+    "verify": "Ověřit",
+    "submit": "Vytvořit účet",
+    "hasAccount": "Již máte účet?",
+    "signIn": "Přihlásit se",
+    "codeSent": "Ověřovací kód byl odeslán na {email}",
+    "emailExists": "Tento e-mail je již registrován."
+  },
+  "recover": {
+    "title": "Obnovení hesla",
+    "email": "E-mail",
+    "code": "Kód pro obnovení",
+    "newPassword": "Nové heslo",
+    "confirmPassword": "Potvrďte heslo",
+    "sendCode": "Odeslat kód",
+    "verify": "Ověřit",
+    "submit": "Nastavit nové heslo",
+    "backToLogin": "Zpět na přihlášení",
+    "success": "Heslo bylo úspěšně změněno."
+  },
+  "consent": {
+    "title": "Žádost o autorizaci",
+    "description": "{app} žádá o přístup k vašemu účtu",
+    "scopeRead": "Číst informace o vašem profilu",
+    "allow": "Povolit",
+    "deny": "Zamítnout"
+  },
+  "debug": {
+    "success": "Autorizace proběhla úspěšně.",
+    "noData": "Nebyla přijata žádná autorizační data."
+  },
+  "error": {
+    "title": "Chyba",
+    "generic": "Došlo k chybě.",
+    "backToLogin": "Zpět na přihlášení"
+  }
+}

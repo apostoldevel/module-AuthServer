@@ -655,6 +655,40 @@ grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&
 assertion=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[abbreviated for brevity].NorYsi-Ht826HUFCEArVZ60_dEUmYiJYXubnTyweIMg
 ```
 
+Frontend Application
+-
+
+AuthServer includes a ready-to-use **Vue 3 + Vite** single-page application for OAuth2 authentication flows. It lives in the [`frontend/`](frontend/) directory and provides:
+
+* **Login** (`/login`) — username/password and Google sign-in
+* **Registration** (`/register`) — email verification with 6-digit code
+* **Password recovery** (`/recover`) — email-based reset flow
+* **OAuth2 consent** (`/authorize`) — authorization code grant consent screen
+* **Error page** (`/error`) — user-friendly error display
+
+### Key characteristics
+
+* **No tokens in JavaScript** — authentication is cookie-based only (`HttpOnly` cookies via `credentials: 'include'`). No `localStorage`, no token management code.
+* **Build-time configuration** — all project-specific values (API host, client ID, branding) are injected via `VITE_*` environment variables. No code changes needed between projects.
+* **Internationalization** — built-in i18n support (English + Russian). Add more locales by dropping JSON files into `src/i18n/`.
+* **Reusable across projects** — the frontend is designed as a shared component of the AuthServer module. Each Apostol project builds its own instance with its own `.env` and deploys it on `auth.<domain>`.
+
+### Deployment model
+
+```
+auth.example.com          ← nginx serves frontend dist/
+  ├─ /login               ← Vue SPA (all routes → index.html)
+  ├─ /register
+  ├─ /recover
+  ├─ /authorize
+  ├─ /oauth2/*            ← nginx proxies to Apostol backend
+  └─ /api/*               ← nginx proxies to Apostol backend
+```
+
+The frontend is deployed as a same-origin proxy: nginx serves the static SPA and proxies `/oauth2/` and `/api/` requests to the Apostol backend. This avoids CORS issues entirely.
+
+> For full integration instructions, see [`frontend/README.md`](frontend/README.md).
+
 Configuration
 -
 

@@ -77,6 +77,10 @@ private:
                                    std::string_view session,
                                    std::string_view domain);
 
+    static void set_service_cookies(HttpResponse& resp,
+                                    std::string_view access_token,
+                                    std::string_view refresh_token);
+
     // ── JWT ──────────────────────────────────────────────────────────────────
     std::string get_public_key(std::string_view kid) const;
 

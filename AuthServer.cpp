@@ -44,6 +44,8 @@ static constexpr auto kRetryInterval     = std::chrono::seconds(5);
 
 static constexpr const char* kCookieAT  = "__Secure-AT";
 static constexpr const char* kCookieRT  = "__Secure-RT";
+static constexpr const char* kCookieSAT = "__Secure-SAT";
+static constexpr const char* kCookieSRT = "__Secure-SRT";
 static constexpr const char* kCookieSID = "SID";
 static constexpr int kCookieMaxAge      = 60 * 86400; // 60 days
 
@@ -195,6 +197,19 @@ void AuthServer::set_secure_cookies(HttpResponse& resp,
     if (!session.empty())
         resp.set_cookie(kCookieSID, session, "/", kCookieMaxAge,
                         true, "Lax", true);
+}
+
+void AuthServer::set_service_cookies(HttpResponse& resp,
+                                     std::string_view access_token,
+                                     std::string_view refresh_token)
+{
+    if (!access_token.empty())
+        resp.set_cookie(kCookieSAT, access_token, "/", kCookieMaxAge,
+                        true, "None", true);
+
+    if (!refresh_token.empty())
+        resp.set_cookie(kCookieSRT, refresh_token, "/", kCookieMaxAge,
+                        true, "None", true);
 }
 
 // ─── JWT ────────────────────────────────────────────────────────────────────
@@ -540,11 +555,11 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
     resp.set_deferred(true);
     auto conn = std::static_pointer_cast<HttpConnection>(req.connection_ctx);
 
-    const bool set_cookies = (grant_type != "client_credentials");
+    const bool is_service = (grant_type == "client_credentials");
 
     pool_.execute(std::move(sql),
         // on_result
-        [conn, hostname, set_cookies](std::vector<PgResult> results) {
+        [conn, hostname, is_service](std::vector<PgResult> results) {
             HttpResponse r;
 
             if (results.empty() || !results[0].ok()) {
@@ -580,7 +595,9 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
                 auto refresh_token = result_json.value("refresh_token", "");
                 auto session       = result_json.value("session", "");
 
-                if (set_cookies) {
+                if (is_service) {
+                    set_service_cookies(r, access_token, refresh_token);
+                } else {
                     set_secure_cookies(r, access_token, refresh_token,
                                        session, "");
                 }

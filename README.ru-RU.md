@@ -147,7 +147,12 @@ grant_type=password&username=USER&password=PASS&scope=YOUR-SCOPE&access_type=off
 Authorization: Bearer eyJ...
 ```
 
-Сервер также автоматически устанавливает `HttpOnly`-куки (`__Secure-AT`, `__Secure-RT`, `SID`) — используются браузерными клиентами.
+Сервер автоматически устанавливает `HttpOnly`-куки:
+
+| Тип гранта | Устанавливаемые cookies |
+|-----------|------------------------|
+| `password`, `authorization_code`, `refresh_token`, `jwt-bearer` | `__Secure-AT`, `__Secure-RT`, `SID` (сессия пользователя) |
+| `client_credentials` | `__Secure-SAT`, `__Secure-SRT` (сервисная сессия, без `SID`) |
 
 > Полная документация: [Аутентификация и авторизация](#аутентификация-и-авторизация)
 
@@ -156,43 +161,84 @@ Authorization: Bearer eyJ...
 
 > Для разработчиков браузерных SPA — никакого кода для управления токенами.
 
-Сервер реализует паттерн **Token Handler** из коробки. После входа `AuthServer` устанавливает `__Secure-AT` и `__Secure-RT` как `HttpOnly; Secure; SameSite=None` cookies. Все последующие API-запросы отправляют эти cookies автоматически — браузер берёт на себя всё.
+Сервер реализует паттерн **Token Handler** из коробки. Две независимые пары cookies сосуществуют для разных контекстов аутентификации:
+
+| Контекст | Cookies | Устанавливаются при | Назначение |
+|----------|---------|---------------------|------------|
+| **Пользователь** | `__Secure-AT`, `__Secure-RT`, `SID` | `password` / `authorization_code` | Операции авторизованного пользователя |
+| **Сервис** | `__Secure-SAT`, `__Secure-SRT` | `client_credentials` | Публичные/гостевые операции (регистрация, публичные данные) |
+
+Все cookies — `HttpOnly; Secure; SameSite=None`. Браузер отправляет их автоматически — фронтенд никогда не читает и не управляет токенами напрямую.
 
 ### Как это работает
+
+**Контекст пользователя** (по умолчанию):
 
 ```
 Браузерное SPA
   └─ fetch('/api/v1/...', { credentials: 'include' })
        ↓
   Apostol AppServer
-    1. Читает __Secure-AT из cookie (заголовок Authorization не нужен)
+    1. Читает __Secure-AT из cookie
     2. Проверяет токен — если истёк:
        a. Вызывает daemon.refresh_token() → новые токены
        b. Устанавливает новые cookies __Secure-AT, __Secure-RT, SID
        c. Прозрачно повторяет оригинальный запрос
     3. Возвращает API-ответ + заголовки Set-Cookie
-       ↓
-Браузер получает данные. Новые cookies установлены автоматически.
-Никаких 401. Никакого ручного refresh. Никакого setTimeout.
 ```
+
+**Сервисный контекст** — фронтенд передаёт заголовок `X-Auth-Context: service`:
+
+```
+Браузерное SPA
+  └─ fetch('/api/v1/...', { credentials: 'include', headers: { 'X-Auth-Context': 'service' } })
+       ↓
+  Apostol AppServer
+    1. Читает заголовок X-Auth-Context → выбирает cookie __Secure-SAT
+    2. Проверяет токен — если истёк:
+       a. Вызывает daemon.refresh_token() → новые токены
+       b. Устанавливает новые cookies __Secure-SAT, __Secure-SRT
+       c. Прозрачно повторяет оригинальный запрос
+    3. Возвращает API-ответ + заголовки Set-Cookie
+```
+
+Обе пары живут в браузере одновременно и не конфликтуют.
 
 ### Что должен сделать фронтенд
 
-Добавить `credentials: 'include'` ко всем API-запросам. Это всё.
+1. Добавить `credentials: 'include'` ко всем запросам.
+2. Передавать заголовок `X-Auth-Context: service` для сервисных (гостевых/публичных) запросов.
 
 ```javascript
-// Вход
-const res = await fetch('/oauth2/token', {
+// 1. Сервисная аутентификация (один раз, до входа пользователя — например, на странице регистрации)
+await fetch('/oauth2/token', {
+  method: 'POST',
+  credentials: 'include',
+  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  body: 'grant_type=client_credentials&client_id=CLIENT&scope=SCOPE'
+});
+// Cookies __Secure-SAT, __Secure-SRT устанавливаются автоматически.
+
+// 2. Сервисные API-вызовы (публичные данные, регистрация и т.д.)
+const data = await fetch('/api/v1/sign/up', {
+  method: 'POST',
+  credentials: 'include',
+  headers: { 'X-Auth-Context': 'service' },
+  body: JSON.stringify({ username: 'new_user', ... })
+});
+
+// 3. Вход пользователя
+await fetch('/oauth2/token', {
   method: 'POST',
   credentials: 'include',
   headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   body: 'grant_type=password&username=USER&password=PASS&...'
 });
-// Cookies __Secure-AT, __Secure-RT, SID устанавливаются браузером автоматически.
+// Cookies __Secure-AT, __Secure-RT, SID устанавливаются автоматически.
 
-// Все последующие API-вызовы
-const data = await fetch('/api/v1/whoami', { credentials: 'include' });
-// Обновление токена (при необходимости) прозрачно — всегда получаете 200.
+// 4. Пользовательские API-вызовы (контекст по умолчанию, дополнительный заголовок не нужен)
+const profile = await fetch('/api/v1/whoami', { credentials: 'include' });
+// Обновление токена прозрачно — всегда получаете 200.
 ```
 
 ### Что делать при 401

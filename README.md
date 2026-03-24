@@ -147,7 +147,12 @@ Use `access_token` as a `Bearer` token in all subsequent API requests:
 Authorization: Bearer eyJ...
 ```
 
-The server also sets `HttpOnly` cookies (`__Secure-AT`, `__Secure-RT`, `SID`) — used automatically by browser clients.
+The server sets `HttpOnly` cookies automatically:
+
+| Grant type | Cookies set |
+|-----------|-------------|
+| `password`, `authorization_code`, `refresh_token`, `jwt-bearer` | `__Secure-AT`, `__Secure-RT`, `SID` (user session) |
+| `client_credentials` | `__Secure-SAT`, `__Secure-SRT` (service session, no `SID`) |
 
 > Full reference: [Authentication and Authorization](#authentication-and-authorization)
 
@@ -156,43 +161,84 @@ Cookie-Based Authentication
 
 > For browser SPA developers — zero token management code required.
 
-The server implements the **Token Handler** pattern out of the box. After login, `AuthServer` sets `__Secure-AT` and `__Secure-RT` as `HttpOnly; Secure; SameSite=None` cookies. All subsequent API requests send these cookies automatically — the browser handles everything.
+The server implements the **Token Handler** pattern out of the box. Two independent cookie pairs coexist for different auth contexts:
+
+| Context | Cookies | Set on | Use case |
+|---------|---------|--------|----------|
+| **User** | `__Secure-AT`, `__Secure-RT`, `SID` | `password` / `authorization_code` login | Authorized user operations |
+| **Service** | `__Secure-SAT`, `__Secure-SRT` | `client_credentials` grant | Public/guest operations (registration, public data) |
+
+All cookies are `HttpOnly; Secure; SameSite=None`. The browser sends them automatically — the frontend never reads or manages tokens directly.
 
 ### How it works
+
+**User context** (default):
 
 ```
 Browser SPA
   └─ fetch('/api/v1/...', { credentials: 'include' })
        ↓
   Apostol AppServer
-    1. Reads __Secure-AT from cookie (no Authorization header needed)
+    1. Reads __Secure-AT from cookie
     2. Verifies token — if expired:
        a. Calls daemon.refresh_token() → new tokens
        b. Sets new __Secure-AT, __Secure-RT, SID cookies
        c. Replays the original request transparently
     3. Returns API response + Set-Cookie headers
-       ↓
-Browser receives data. New cookies set automatically.
-No 401. No manual refresh. No setTimeout.
 ```
+
+**Service context** — frontend sends `X-Auth-Context: service` header:
+
+```
+Browser SPA
+  └─ fetch('/api/v1/...', { credentials: 'include', headers: { 'X-Auth-Context': 'service' } })
+       ↓
+  Apostol AppServer
+    1. Reads X-Auth-Context header → selects __Secure-SAT cookie
+    2. Verifies token — if expired:
+       a. Calls daemon.refresh_token() → new tokens
+       b. Sets new __Secure-SAT, __Secure-SRT cookies
+       c. Replays the original request transparently
+    3. Returns API response + Set-Cookie headers
+```
+
+Both pairs live in the browser simultaneously and do not conflict.
 
 ### What the frontend must do
 
-Add `credentials: 'include'` to every API request. That's it.
+1. Add `credentials: 'include'` to every request.
+2. Send `X-Auth-Context: service` header for service (guest/public) requests.
 
 ```javascript
-// Login
-const res = await fetch('/oauth2/token', {
+// 1. Service auth (once, before user login — e.g., on registration page)
+await fetch('/oauth2/token', {
+  method: 'POST',
+  credentials: 'include',
+  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  body: 'grant_type=client_credentials&client_id=CLIENT&scope=SCOPE'
+});
+// Cookies __Secure-SAT, __Secure-SRT are set automatically.
+
+// 2. Service API calls (public data, registration, etc.)
+const data = await fetch('/api/v1/sign/up', {
+  method: 'POST',
+  credentials: 'include',
+  headers: { 'X-Auth-Context': 'service' },
+  body: JSON.stringify({ username: 'new_user', ... })
+});
+
+// 3. User login
+await fetch('/oauth2/token', {
   method: 'POST',
   credentials: 'include',
   headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   body: 'grant_type=password&username=USER&password=PASS&...'
 });
-// Cookies __Secure-AT, __Secure-RT, SID are set automatically by the browser.
+// Cookies __Secure-AT, __Secure-RT, SID are set automatically.
 
-// All subsequent API calls
-const data = await fetch('/api/v1/whoami', { credentials: 'include' });
-// Token refresh (if needed) is transparent — you always get a 200.
+// 4. User API calls (default context, no extra header needed)
+const profile = await fetch('/api/v1/whoami', { credentials: 'include' });
+// Token refresh is transparent — you always get a 200.
 ```
 
 ### What to do on 401

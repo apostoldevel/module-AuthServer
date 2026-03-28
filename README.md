@@ -30,7 +30,7 @@ Key characteristics:
 | `authorize` / `auth` | Validates `client_id`, `redirect_uri`, `response_type`, `scope`, `access_type`, `prompt` against in-memory provider config. Redirects to the login page URL from `conf/sites/*.json` (`oauth2.identifier` or `oauth2.secret`). | None |
 | `code` | Receives authorization code from external provider redirect. For external providers (e.g. Google): makes a direct C++ HTTP call to the provider's `token_uri` to exchange the code for a token, then verifies the returned JWT. | `daemon.login(token, agent, host, origin)` |
 | `callback` | Redirects to `oauth2.callback` from `conf/sites/*.json`. | None |
-| `identifier` | Extracts `value` from request body, checks Bearer token. | `daemon.identifier(token, value)` |
+| `identifier` | Extracts `value` from request body. Authenticates via: (1) `Authorization: Bearer` header, (2) `Session`+`Secret` headers, or (3) cookie `__Secure-AT`/`__Secure-SAT` selected by `X-Auth-Context` header. | `daemon.identifier(token, value)` |
 
 **POST /oauth2/{action} routing:**
 
@@ -38,6 +38,12 @@ Key characteristics:
 |--------|--------------|---------------|
 | `token` | Parses `client_id`/`client_secret` from body or `Authorization: Basic` header. For `web`/`service` apps: validates `redirect_uri` and `javascript_origins` against provider config. Calls DB with full payload as JSONB. | `daemon.token(client_id, client_secret, payload::jsonb, agent, host)` |
 | `identifier` | Same as GET identifier. | `daemon.identifier(token, value)` |
+
+**Identifier endpoint authentication priority:**
+
+1. `Authorization: Bearer <JWT>` header — token verified locally via jwt-cpp
+2. `Session` + `Secret` headers — inter-service authentication (session ID passed directly)
+3. Cookie-based — reads `X-Auth-Context` header: if `"service"` → `__Secure-SAT` cookie, otherwise → `__Secure-AT` cookie. Token from cookie is verified locally via jwt-cpp.
 
 **Token endpoint flow (`POST /oauth2/token`) step by step:**
 

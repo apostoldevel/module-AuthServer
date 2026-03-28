@@ -30,7 +30,7 @@
 | `authorize` / `auth` | Валидирует `client_id`, `redirect_uri`, `response_type`, `scope`, `access_type`, `prompt` по конфигурации провайдера в памяти. Перенаправляет на страницу входа из `conf/sites/*.json` (`oauth2.identifier` или `oauth2.secret`). | Нет |
 | `code` | Получает код авторизации из редиректа внешнего провайдера. Для внешних провайдеров (например, Google): выполняет прямой HTTP-вызов к `token_uri` провайдера для обмена кода на токен, затем верифицирует полученный JWT. | `daemon.login(token, agent, host, origin)` |
 | `callback` | Перенаправляет на `oauth2.callback` из `conf/sites/*.json`. | Нет |
-| `identifier` | Извлекает `value` из тела запроса, проверяет Bearer-токен. | `daemon.identifier(token, value)` |
+| `identifier` | Извлекает `value` из тела запроса. Аутентификация: (1) заголовок `Authorization: Bearer`, (2) заголовки `Session`+`Secret`, (3) cookie `__Secure-AT`/`__Secure-SAT` по заголовку `X-Auth-Context`. | `daemon.identifier(token, value)` |
 
 **Маршрутизация POST /oauth2/{action}:**
 
@@ -38,6 +38,12 @@
 |----------|---------------|------------|
 | `token` | Разбирает `client_id`/`client_secret` из тела запроса или заголовка `Authorization: Basic`. Для приложений `web`/`service`: проверяет `redirect_uri` и `javascript_origins` по конфигурации провайдера. Передаёт полный payload в БД как JSONB. | `daemon.token(client_id, client_secret, payload::jsonb, agent, host)` |
 | `identifier` | Аналогично GET identifier. | `daemon.identifier(token, value)` |
+
+**Приоритет аутентификации для endpoint `identifier`:**
+
+1. Заголовок `Authorization: Bearer <JWT>` — токен верифицируется локально через jwt-cpp
+2. Заголовки `Session` + `Secret` — межсервисная аутентификация (ID сессии передаётся напрямую)
+3. Cookie — читается заголовок `X-Auth-Context`: если `"service"` → cookie `__Secure-SAT`, иначе → cookie `__Secure-AT`. Токен из cookie верифицируется локально через jwt-cpp.
 
 **Пошаговый процесс обработки запроса `POST /oauth2/token`:**
 

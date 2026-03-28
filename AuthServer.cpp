@@ -634,24 +634,16 @@ void AuthServer::do_identifier(const HttpRequest& req, HttpResponse& resp)
         return;
     }
 
-    // Check authorization: Bearer JWT or Session+Secret headers
+    // Check authorization: Bearer JWT, Session+Secret headers, or Cookie
     const auto auth_header = req.header("Authorization");
     std::string auth_token;
 
-    if (auth_header.empty()) {
-        // Fallback: Session + Secret headers (inter-service auth)
-        const auto session_id = req.header("Session");
-        const auto secret     = req.header("Secret");
+    JwtKeyResolver key_resolver = [this](std::string_view kid) {
+        return get_public_key(kid);
+    };
 
-        if (session_id.empty() || secret.empty()) {
-            reply_oauth2_error(resp, HttpStatus::unauthorized,
-                               "unauthorized", "Unauthorized.");
-            return;
-        }
-
-        // Session-based auth goes through daemon.identifier with session token
-        auth_token = session_id;
-    } else {
+    if (!auth_header.empty()) {
+        // Priority 1: Authorization Bearer header
         auto auth = parse_authorization(auth_header);
 
         if (auth.schema != Authorization::Schema::bearer) {
@@ -659,11 +651,6 @@ void AuthServer::do_identifier(const HttpRequest& req, HttpResponse& resp)
                                "unauthorized", "Unauthorized.");
             return;
         }
-
-        // Verify Bearer token
-        JwtKeyResolver key_resolver = [this](std::string_view kid) {
-            return get_public_key(kid);
-        };
 
         try {
             verify_jwt(auth.token, providers_, key_resolver);
@@ -682,6 +669,43 @@ void AuthServer::do_identifier(const HttpRequest& req, HttpResponse& resp)
         }
 
         auth_token = std::move(auth.token);
+    } else {
+        // Priority 2: Session + Secret headers (inter-service auth)
+        const auto session_id = req.header("Session");
+        const auto secret     = req.header("Secret");
+
+        if (!session_id.empty() && !secret.empty()) {
+            auth_token = session_id;
+        } else {
+            // Priority 3: Cookie-based token (user or service, selected by X-Auth-Context)
+            auto context = req.header("X-Auth-Context");
+            bool is_service = (context == "service");
+            auto cookie_token = req.cookie(is_service ? kCookieSAT : kCookieAT);
+
+            if (cookie_token.empty()) {
+                reply_oauth2_error(resp, HttpStatus::unauthorized,
+                                   "unauthorized", "Unauthorized.");
+                return;
+            }
+
+            try {
+                verify_jwt(cookie_token, providers_, key_resolver);
+            } catch (const JwtExpiredError&) {
+                reply_oauth2_error(resp, HttpStatus::forbidden,
+                                   "forbidden", "Token expired.");
+                return;
+            } catch (const JwtVerificationError& e) {
+                reply_oauth2_error(resp, HttpStatus::unauthorized,
+                                   "unauthorized", "Unauthorized.");
+                return;
+            } catch (const std::exception& e) {
+                reply_oauth2_error(resp, HttpStatus::unauthorized,
+                                   "unauthorized", "Unauthorized.");
+                return;
+            }
+
+            auth_token = std::move(cookie_token);
+        }
     }
 
     auto sql = fmt::format("SELECT * FROM daemon.identifier({}, {});",

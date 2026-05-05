@@ -128,7 +128,7 @@ namespace Apostol {
                 }
 
                 if (RaiseIfError)
-                    throw EDBError(ErrorMessage.c_str());
+                    throw EDBError("%s", ErrorMessage.c_str());
 
                 if (ErrorCode >= 10000)
                     ErrorCode = ErrorCode / 100;
@@ -182,7 +182,7 @@ namespace Apostol {
             auto pResult = APollQuery->Results(0);
 
             if (pResult->ExecStatus() != PGRES_TUPLES_OK) {
-                QueryException(APollQuery, Delphi::Exception::EDBError(pResult->GetErrorMessage()));
+                QueryException(APollQuery, Delphi::Exception::EDBError("%s", pResult->GetErrorMessage()));
                 return;
             }
 
@@ -452,7 +452,7 @@ namespace Apostol {
 
                     try {
                         if (pResult->ExecStatus() != PGRES_TUPLES_OK)
-                            throw Delphi::Exception::EDBError(pResult->GetErrorMessage());
+                            throw Delphi::Exception::EDBError("%s", pResult->GetErrorMessage());
 
                         Reply.ContentType = CHTTPReply::json;
                         Reply.Content = pResult->GetValue(0, 0);
@@ -563,7 +563,7 @@ namespace Apostol {
 
                     try {
                         if (pResult->ExecStatus() != PGRES_TUPLES_OK)
-                            throw Delphi::Exception::EDBError(pResult->GetErrorMessage());
+                            throw Delphi::Exception::EDBError("%s", pResult->GetErrorMessage());
 
                         PQResultToJson(pResult, Reply.Content);
 

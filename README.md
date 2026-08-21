@@ -27,7 +27,7 @@ Key characteristics:
 
 | Action | What C++ does | Database call |
 |--------|--------------|---------------|
-| `authorize` / `auth` | Validates `client_id`, `redirect_uri`, `response_type`, `scope`, `access_type`, `prompt` against in-memory provider config. Redirects to the login page URL from `conf/sites/*.json` (`oauth2.identifier` or `oauth2.secret`). | None |
+| `authorize` / `auth` | Validates `client_id`, `redirect_uri`, `response_type`, `scope`, `access_type`, `prompt` against in-memory provider config. Then: with a live session (cookie `SID`, or the `sub` claim of `__Secure-AT`), `response_type=code` and no screen-naming `prompt` — issues the code and redirects to `redirect_uri?code=&state=`. With `prompt=consent` — redirects to `oauth2.consent`. Otherwise — to the login page (`oauth2.identifier` or `oauth2.secret`). | `daemon.authorization_code(session, client_id, redirect_uri, scope, state, access_type, agent, host)` (only when a session is present) |
 | `code` | Receives authorization code from external provider redirect. For external providers (e.g. Google): makes a direct C++ HTTP call to the provider's `token_uri` to exchange the code for a token, then verifies the returned JWT. | `daemon.login(token, agent, host, origin)` |
 | `callback` | Redirects to `oauth2.callback` from `conf/sites/*.json`. | None |
 | `identifier` | Extracts `value` from request body. Authenticates via: (1) `Authorization: Bearer` header, (2) `Session`+`Secret` headers, or (3) cookie `__Secure-AT`/`__Secure-SAT` selected by `X-Auth-Context` header. | `daemon.identifier(token, value)` |
@@ -356,7 +356,7 @@ Authorization Code is one of the most commonly used grant types because it is we
 | scope | `scope` | **Recommended.** A space-separated list of scopes that define the resources your application can access on behalf of the user. |
 | access_type | `access_type` | **Recommended.** Specifies whether your application can refresh access tokens when the user is not present in the browser. Accepted values: `online` (default) and `offline`. |
 | state | `state` | **Recommended.** A set of random characters that will be returned by the server to the client (used to protect against replay attacks). |
-| prompt | `prompt` | **Optional.** Controls the login page shown to the user. Accepted values: `signin` (default), `secret` (password page), `consent`, `select_account`, `none`. When `secret` is specified, the user is redirected to the password-entry page (`oauth2.secret` in `conf/sites/*.json`) instead of the identifier page. |
+| prompt | `prompt` | **Optional.** Controls the screen shown to the user. Accepted values: `signin`, `secret` (password page), `consent`, `select_account`, `none`. Omitted: a signed-in user gets a code without seeing any screen; otherwise the identifier page. `secret` — the password-entry page (`oauth2.secret`); `consent` — the consent screen (`oauth2.consent`); `signin` and `select_account` — the identifier page even when a session already exists. |
 
 **Example request:**
 ```http request

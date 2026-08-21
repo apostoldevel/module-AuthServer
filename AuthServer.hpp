@@ -28,7 +28,7 @@ class Application;
 // OAuth 2.0 Authorization Server — ports v1 CAuthServer.
 //
 // Handles all requests under /oauth2/:
-//   GET  /oauth2/authorize  — redirect to login page
+//   GET  /oauth2/authorize  — issue code to a signed-in user, else login/consent page
 //   GET  /oauth2/code[/provider] — exchange auth code from external provider
 //   GET  /oauth2/callback   — redirect to callback URL
 //   GET  /oauth2/identifier — GET form of identifier lookup
@@ -61,6 +61,24 @@ private:
     // ── Endpoints ────────────────────────────────────────────────────────────
     void do_token(const HttpRequest& req, HttpResponse& resp);
     void do_identifier(const HttpRequest& req, HttpResponse& resp);
+
+    /// Issue an authorization code for an already signed-in user and redirect the
+    /// browser to @p redirect_uri with ?code=&state=. Deferred (async DB call).
+    /// @p redirect_login is a complete login-page URL, used when the session
+    /// turns out to be stale.
+    void issue_authorization_code(const HttpRequest& req, HttpResponse& resp,
+                                  const std::string& session,
+                                  const std::string& client_id,
+                                  const std::string& redirect_uri,
+                                  const std::string& scope,
+                                  const std::string& state,
+                                  const std::string& access_type,
+                                  const std::string& redirect_login,
+                                  const std::string& redirect_error);
+
+    /// Session code of the signed-in user, or empty if there is none.
+    /// Reads the SID cookie; falls back to the "sub" claim of __Secure-AT.
+    std::string session_from_request(const HttpRequest& req) const;
 
     // ── OAuth2 error responses (RFC 6749 format) ─────────────────────────────
     static void reply_oauth2_error(HttpResponse& resp, HttpStatus status,

@@ -10,6 +10,8 @@
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+
 
 namespace apostol
 {
@@ -237,6 +239,7 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
 
     const std::string redirect_identifier = site ? site->oauth2.identifier : "";
     const std::string redirect_secret     = site ? site->oauth2.secret     : "";
+    const std::string redirect_consent    = site ? site->oauth2.consent    : "";
     const std::string redirect_callback   = site ? site->oauth2.callback   : "";
     const std::string redirect_err        = site ? site->oauth2.error      : "";
     const std::string redirect_debug      = site ? site->oauth2.debug      : "";
@@ -295,6 +298,10 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
             return;
         }
 
+        // `valid` is reused by the parses below — capture what we need now.
+        const bool wants_code =
+            std::find(valid.begin(), valid.end(), "code") != valid.end();
+
         // Validate access_type
         auto access_types = kAccessTypes;
         if (response_type == "token")
@@ -334,23 +341,50 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
             return;
         }
 
-        // Build redirect to login page
-        auto location = (prompt == "secret") ? redirect_secret : redirect_identifier;
+        // A prompt that names a screen means the client wants that screen shown,
+        // even when the user is already signed in.
+        const auto wants_prompt = [&valid](std::string_view value) {
+            return std::find(valid.begin(), valid.end(), value) != valid.end();
+        };
 
-        location += fmt::format("?client_id={}&response_type={}", client_id, response_type);
+        const bool interactive = wants_prompt("signin") || wants_prompt("secret") ||
+                                 wants_prompt("consent") || wants_prompt("select_account");
+
+        // The original request, ready to be appended to whichever page we send
+        // the browser to — so that the flow resumes where it left off.
+        auto query = fmt::format("?client_id={}&response_type={}", client_id, response_type);
 
         if (!redirect_uri.empty())
-            location += "&redirect_uri=" + url_encode(redirect_uri);
+            query += "&redirect_uri=" + url_encode(redirect_uri);
         if (!access_type.empty())
-            location += "&access_type=" + access_type;
+            query += "&access_type=" + access_type;
         if (!scope.empty())
-            location += "&scope=" + url_encode(scope);
+            query += "&scope=" + url_encode(scope);
         if (!prompt.empty())
-            location += "&prompt=" + url_encode(prompt);
+            query += "&prompt=" + url_encode(prompt);
         if (!state.empty())
-            location += "&state=" + url_encode(state);
+            query += "&state=" + url_encode(state);
 
-        redirect(resp, location);
+        const std::string redirect_login =
+            ((prompt == "secret") ? redirect_secret : redirect_identifier) + query;
+
+        // Signed in already and nothing to ask: hand the client its code and be done.
+        // Without this the consent screen can never complete — its "Allow" button
+        // comes back here, and every answer used to be "go to the login page".
+        if (wants_code && !interactive) {
+            auto session = session_from_request(req);
+            if (!session.empty()) {
+                issue_authorization_code(req, resp, session, client_id, redirect_uri,
+                                         scope, state, access_type,
+                                         redirect_login, redirect_err);
+                return;
+            }
+        }
+
+        // Redirect to the login — or, when asked for, the consent — page
+        redirect(resp, (wants_prompt("consent") && !redirect_consent.empty())
+                           ? redirect_consent + query
+                           : redirect_login);
 
     } else if (action == "code") {
 
@@ -617,6 +651,134 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
             HttpResponse r;
             reply_oauth2_error(r, HttpStatus::internal_server_error,
                                "server_error", error);
+            conn->send_response(r);
+        });
+}
+
+// ─── session_from_request ───────────────────────────────────────────────────
+
+std::string AuthServer::session_from_request(const HttpRequest& req) const
+{
+    // SID carries the session code itself.
+    auto sid = req.cookie(kCookieSID);
+    if (!sid.empty())
+        return sid;
+
+    // Otherwise take it from the access token: "sub" is the session code.
+    auto token = req.cookie(kCookieAT);
+    if (token.empty())
+        return {};
+
+    JwtKeyResolver key_resolver = [this](std::string_view kid) {
+        return get_public_key(kid);
+    };
+
+    try {
+        return verify_jwt(token, providers_, key_resolver).sub;
+    } catch (const std::exception&) {
+        // Expired or unverifiable — treat as "not signed in".
+        return {};
+    }
+}
+
+// ─── issue_authorization_code ───────────────────────────────────────────────
+
+void AuthServer::issue_authorization_code(const HttpRequest& req, HttpResponse& resp,
+                                          const std::string& session,
+                                          const std::string& client_id,
+                                          const std::string& redirect_uri,
+                                          const std::string& scope,
+                                          const std::string& state,
+                                          const std::string& access_type,
+                                          const std::string& redirect_login,
+                                          const std::string& redirect_error_uri)
+{
+    const auto agent = get_user_agent(req, "AuthServer/2.0");
+    const auto host  = get_real_ip(req);
+
+    auto sql = fmt::format("SELECT * FROM daemon.authorization_code({}, {}, {}, {}, {}, {}, {}, {});",
+                           pq_quote_literal(session),
+                           pq_quote_literal(client_id),
+                           pq_quote_literal(redirect_uri),
+                           scope.empty() ? "null" : pq_quote_literal(scope),
+                           state.empty() ? "null" : pq_quote_literal(state),
+                           access_type.empty() ? "null" : pq_quote_literal(access_type),
+                           pq_quote_literal(agent),
+                           pq_quote_literal(host));
+
+    resp.set_deferred(true);
+    auto conn = std::static_pointer_cast<HttpConnection>(req.connection_ctx);
+
+    // Everything the callback needs, by value — the request is gone by then.
+    auto login = redirect_login;
+    auto err_uri = redirect_error_uri;
+    auto target = redirect_uri;
+
+    pool_.execute(std::move(sql),
+        // on_result
+        [conn, target, login, err_uri](std::vector<PgResult> results) {
+            HttpResponse r;
+
+            if (results.empty() || !results[0].ok()) {
+                auto msg = results.empty() ? "no results"
+                                           : results[0].error_message();
+                redirect_error(r, err_uri, 500, "server_error", msg);
+                conn->send_response(r);
+                return;
+            }
+
+            try {
+                auto result_json = nlohmann::json::parse(results[0].value(0, 0));
+
+                if (result_json.contains("error")) {
+                    auto& err_obj = result_json["error"];
+                    int code = err_obj.value("code", 400);
+                    auto error = err_obj.value("error", "invalid_request");
+                    auto message = err_obj.value("message", "Invalid request.");
+                    if (code >= 10000) code = code / 100;
+                    if (code < 0) code = 400;
+
+                    // The session did not hold up — ask the user to sign in again
+                    // rather than showing an error page.
+                    if (error == "access_denied" && !login.empty()) {
+                        redirect(r, login);
+                        conn->send_response(r);
+                        return;
+                    }
+
+                    redirect_error(r, err_uri, code, error, message);
+                    conn->send_response(r);
+                    return;
+                }
+
+                auto code  = json_string(result_json, "code");
+                auto state = json_string(result_json, "state");
+
+                if (code.empty()) {
+                    redirect_error(r, err_uri, 500, "server_error",
+                                   "Authorization code was not issued.");
+                    conn->send_response(r);
+                    return;
+                }
+
+                auto location = target;
+                location += (location.find('?') == std::string::npos) ? '?' : '&';
+                location += "code=" + url_encode(code);
+                if (!state.empty())
+                    location += "&state=" + url_encode(state);
+
+                redirect(r, location);
+
+            } catch (const std::exception& e) {
+                redirect_error(r, err_uri, 500, "server_error", e.what());
+            }
+
+            conn->send_response(r);
+        },
+        // on_exception
+        [conn, err_uri](std::string_view error) {
+            HttpResponse r;
+            redirect_error(r, err_uri, 500, "server_error", error);
             conn->send_response(r);
         });
 }

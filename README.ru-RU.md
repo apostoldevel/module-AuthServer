@@ -27,7 +27,7 @@
 
 | Действие | Что делает C++ | Вызов в БД |
 |----------|---------------|------------|
-| `authorize` / `auth` | Валидирует `client_id`, `redirect_uri`, `response_type`, `scope`, `access_type`, `prompt` по конфигурации провайдера в памяти. Перенаправляет на страницу входа из `conf/sites/*.json` (`oauth2.identifier` или `oauth2.secret`). | Нет |
+| `authorize` / `auth` | Валидирует `client_id`, `redirect_uri`, `response_type`, `scope`, `access_type`, `prompt` по конфигурации провайдера в памяти. Далее: при живой сессии (cookie `SID` либо claim `sub` из `__Secure-AT`), `response_type=code` и `prompt`, не называющем экран, — выдаёт код и перенаправляет на `redirect_uri?code=&state=`. При `prompt=consent` — на `oauth2.consent`. Иначе — на страницу входа (`oauth2.identifier` или `oauth2.secret`). | `daemon.authorization_code(session, client_id, redirect_uri, scope, state, access_type, agent, host)` (только при наличии сессии) |
 | `code` | Получает код авторизации из редиректа внешнего провайдера. Для внешних провайдеров (например, Google): выполняет прямой HTTP-вызов к `token_uri` провайдера для обмена кода на токен, затем верифицирует полученный JWT. | `daemon.login(token, agent, host, origin)` |
 | `callback` | Перенаправляет на `oauth2.callback` из `conf/sites/*.json`. | Нет |
 | `identifier` | Извлекает `value` из тела запроса. Аутентификация: (1) заголовок `Authorization: Bearer`, (2) заголовки `Session`+`Secret`, (3) cookie `__Secure-AT`/`__Secure-SAT` по заголовку `X-Auth-Context`. | `daemon.identifier(token, value)` |
@@ -356,7 +356,7 @@ POST /oauth2/token
 | scope | `scope` | **Рекомендуемый.** Список областей, разделённых пробелами, которые определяют ресурсы, к которым ваше приложение может получить доступ от имени пользователя. |
 | access_type | `access_type` | **Рекомендуемый.** Указывает, может ли ваше приложение обновлять маркеры доступа, когда пользователь отсутствует в браузере. Допустимые значения: `online` (по умолчанию) и `offline`. |
 | state | `state` | **Рекомендуемый.** Набор случайных символов, которые будут возвращены сервером клиенту (используется для защиты от повторных запросов). |
-| prompt | `prompt` | **Необязательный.** Управляет типом отображаемой страницы входа. Допустимые значения: `signin` (по умолчанию), `secret` (страница ввода пароля), `consent`, `select_account`, `none`. При значении `secret` пользователь перенаправляется на страницу ввода пароля (`oauth2.secret` в `conf/sites/*.json`), а не на страницу идентификации. |
+| prompt | `prompt` | **Необязательный.** Управляет тем, какой экран показать пользователю. Допустимые значения: `signin`, `secret` (страница ввода пароля), `consent`, `select_account`, `none`. Не задан: вошедший пользователь получает код, не увидев ни одного экрана; иначе — страница идентификации. `secret` — страница ввода пароля (`oauth2.secret`); `consent` — экран согласия (`oauth2.consent`); `signin` и `select_account` — страница идентификации даже при живой сессии. |
 
 **Пример запроса:**
 ```http request

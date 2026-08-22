@@ -47,6 +47,7 @@
   "consent": {
     "title": "Žiadosť o autorizáciu",
     "description": "{app} žiada o prístup k vášmu účtu",
+    "scopeIntro": "Požadovaný prístup:",
     "scopeRead": "Čítať informácie o vašom profile",
     "allow": "Povoliť",
     "deny": "Zamietnuť"

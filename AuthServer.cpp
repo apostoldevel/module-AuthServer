@@ -5,6 +5,7 @@
 
 #include "apostol/http_utils.hpp"
 #include "apostol/jwt.hpp"
+#include "apostol/logger.hpp"
 #include "apostol/pg_utils.hpp"
 
 #include <fmt/format.h>
@@ -49,6 +50,12 @@ static constexpr const char* kCookieRT  = "__Secure-RT";
 static constexpr const char* kCookieSAT = "__Secure-SAT";
 static constexpr const char* kCookieSRT = "__Secure-SRT";
 static constexpr const char* kCookieSID = "SID";
+
+// Double-submit token for POST /oauth2/consent. Written by the consent screen and
+// echoed back in the form body; see do_consent for why it exists and why Origin
+// does not. The __Host- prefix is load-bearing: it forbids a Domain attribute, so
+// only this exact host can set the cookie — a sibling subdomain cannot plant one.
+static constexpr const char* kCookieConsentToken = "__Host-CT";
 static constexpr int kCookieMaxAge      = 60 * 86400; // 60 days
 
 // ─── Construction ────────────────────────────────────────────────────────────
@@ -267,25 +274,11 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
             return;
         }
 
-        auto* app = providers_.find_by_client_id(client_id);
-        if (!app) {
-            redirect_error(resp, redirect_err, 401, "invalid_client",
-                           "The OAuth client was not found.");
+        // Client, redirect_uri and scope — checked together, and against the local
+        // provider's registration only.
+        auto* app = validate_client(resp, redirect_err, client_id, redirect_uri, scope);
+        if (!app)
             return;
-        }
-
-        // Validate redirect_uri
-        bool redirect_ok = false;
-        for (const auto& uri : app->redirect_uris) {
-            if (uri == redirect_uri) { redirect_ok = true; break; }
-        }
-        if (!redirect_ok) {
-            redirect_error(resp, redirect_err, 400, "invalid_request",
-                           fmt::format("Invalid parameter value for redirect_uri: "
-                                       "Non-public domains not allowed: {}",
-                                       redirect_uri));
-            return;
-        }
 
         // Validate response_type
         parse_string_list(response_type, kResponseTypes, valid, invalid);
@@ -317,17 +310,6 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
                                fmt::format("Invalid access_type: {}", access_type));
                 return;
             }
-        }
-
-        // Validate scope
-        parse_string_list(scope, app->scopes, valid, invalid);
-        if (!invalid.empty()) {
-            redirect_error(resp, redirect_err, 400, "invalid_scope",
-                           fmt::format("Some requested scopes were invalid: "
-                                       "{{valid=[{}], invalid=[{}]}}",
-                                       join_strings(valid, ", "),
-                                       join_strings(invalid, ", ")));
-            return;
         }
 
         // Validate prompt
@@ -368,23 +350,63 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
         const std::string redirect_login =
             ((prompt == "secret") ? redirect_secret : redirect_identifier) + query;
 
+        // What the user will be asked to agree to. An empty scope is not "nothing" —
+        // the database expands it to every scope there is — so resolve it here, to
+        // the list this client is registered for. The consent screen then shows the
+        // same list that gets recorded, and neither is a blank cheque.
+        const std::string consent_scope =
+            scope.empty() ? join_strings(app->scopes, " ") : scope;
+
+        auto consent_query = fmt::format("?client_id={}&response_type={}",
+                                         url_encode(client_id), url_encode(response_type));
+
+        consent_query += "&redirect_uri=" + url_encode(redirect_uri);
+        if (!access_type.empty())
+            consent_query += "&access_type=" + url_encode(access_type);
+        if (!consent_scope.empty())
+            consent_query += "&scope=" + url_encode(consent_scope);
+        if (!prompt.empty())
+            consent_query += "&prompt=" + url_encode(prompt);
+        if (!state.empty())
+            consent_query += "&state=" + url_encode(state);
+
+        // Where the consent screen lives. There is deliberately no fallback path:
+        // guessing one sends the browser to a URL on whichever host it happened to
+        // ask, and the screen only exists on the host that serves the SPA. A site
+        // that has not named oauth2.consent cannot ask the question, and saying so
+        // to the client beats a redirect into a 404.
+        const std::string consent_page =
+            redirect_consent.empty() ? std::string() : redirect_consent + consent_query;
+
         // Signed in already and nothing to ask: hand the client its code and be done.
         // Without this the consent screen can never complete — its "Allow" button
         // comes back here, and every answer used to be "go to the login page".
+        // Whether the user has actually granted this client access is decided in
+        // daemon.authorization_code, which answers consent_required when they have not.
         if (wants_code && !interactive) {
             auto session = session_from_request(req);
             if (!session.empty()) {
                 issue_authorization_code(req, resp, session, client_id, redirect_uri,
                                          scope, state, access_type,
-                                         redirect_login, redirect_err);
+                                         redirect_login, consent_page, redirect_err,
+                                         /* consent */ false);
                 return;
             }
         }
 
         // Redirect to the login — or, when asked for, the consent — page
-        redirect(resp, (wants_prompt("consent") && !redirect_consent.empty())
-                           ? redirect_consent + query
-                           : redirect_login);
+        if (wants_prompt("consent")) {
+            if (consent_page.empty()) {
+                redirect_client_error(resp, redirect_uri, "consent_required",
+                                      "This server has no consent screen configured.",
+                                      state);
+                return;
+            }
+            redirect(resp, consent_page);
+            return;
+        }
+
+        redirect(resp, redirect_login);
 
     } else if (action == "code") {
 
@@ -453,6 +475,8 @@ void AuthServer::do_post(const HttpRequest& req, HttpResponse& resp)
         do_token(req, resp);
     } else if (action == "identifier") {
         do_identifier(req, resp);
+    } else if (action == "consent") {
+        do_consent(req, resp);
     } else {
         reply_oauth2_error(resp, HttpStatus::not_found,
                            "invalid_request", "Not found.");
@@ -681,6 +705,224 @@ std::string AuthServer::session_from_request(const HttpRequest& req) const
     }
 }
 
+// ─── redirect_client_error ──────────────────────────────────────────────────
+
+// An OAuth2 error that belongs to the *client*, delivered where the spec says it
+// goes: back to its redirect_uri. Distinct from redirect_error, which sends the
+// browser to the site's own error page — right for a request we cannot attribute
+// to a registered client, wrong once we can, because then the client is the party
+// that has to see what went wrong.
+void AuthServer::redirect_client_error(HttpResponse& resp,
+                                       const std::string& redirect_uri,
+                                       std::string_view error,
+                                       std::string_view description,
+                                       const std::string& state)
+{
+    auto location = redirect_uri;
+    location += (location.find('?') == std::string::npos) ? '?' : '&';
+    location += "error=" + url_encode(std::string(error));
+    location += "&error_description=" + url_encode(std::string(description));
+    if (!state.empty())
+        location += "&state=" + url_encode(state);
+
+    redirect(resp, location);
+}
+
+// ─── validate_client ────────────────────────────────────────────────────────
+
+const OAuthApp* AuthServer::validate_client(HttpResponse& resp,
+                                            const std::string& redirect_err,
+                                            const std::string& client_id,
+                                            const std::string& redirect_uri,
+                                            const std::string& scope) const
+{
+    // Local provider only. find_by_client_id searches every provider, so an entry
+    // under google or yandex would answer here too — and that entry exists to let
+    // us verify *their* tokens, not to make its holder a client of ours with a
+    // say over our users' accounts.
+    auto* app = providers_.find_default_by_client_id(client_id);
+    if (!app) {
+        redirect_error(resp, redirect_err, 401, "invalid_client",
+                       "The OAuth client was not found.");
+        return nullptr;
+    }
+
+    // Validate redirect_uri
+    bool redirect_ok = false;
+    for (const auto& uri : app->redirect_uris) {
+        if (uri == redirect_uri) { redirect_ok = true; break; }
+    }
+    if (!redirect_ok) {
+        redirect_error(resp, redirect_err, 400, "invalid_request",
+                       fmt::format("Invalid parameter value for redirect_uri: "
+                                   "Non-public domains not allowed: {}",
+                                   redirect_uri));
+        return nullptr;
+    }
+
+    // Validate scope
+    std::vector<std::string> valid, invalid;
+    parse_string_list(scope, app->scopes, valid, invalid);
+    if (!invalid.empty()) {
+        redirect_error(resp, redirect_err, 400, "invalid_scope",
+                       fmt::format("Some requested scopes were invalid: "
+                                   "{{valid=[{}], invalid=[{}]}}",
+                                   join_strings(valid, ", "),
+                                   join_strings(invalid, ", ")));
+        return nullptr;
+    }
+
+    return app;
+}
+
+// ─── do_consent ─────────────────────────────────────────────────────────────
+
+void AuthServer::do_consent(const HttpRequest& req, HttpResponse& resp)
+{
+    const auto host = get_host(req);
+    const auto* site = sites_.find(host);
+
+    const std::string redirect_identifier = site ? site->oauth2.identifier : "";
+    const std::string redirect_consent    = site ? site->oauth2.consent    : "";
+    const std::string redirect_err        = site ? site->oauth2.error      : "";
+
+    // Body only. content_to_json falls back to the query string when the body is
+    // empty, and a token that can arrive in a URL ends up in access logs, Referer
+    // headers and browser history. The consent screen posts a form; anything else
+    // is not the consent screen.
+    if (req.body.empty()) {
+        redirect_error(resp, redirect_err, 400, "invalid_request",
+                       "The consent answer must be submitted as a request body.");
+        return;
+    }
+
+    auto json = content_to_json(req);
+
+    const auto client_id     = json.value("client_id", "");
+    const auto redirect_uri  = json.value("redirect_uri", "");
+    const auto scope         = json.value("scope", "");
+    const auto state         = json.value("state", "");
+    const auto access_type   = json.value("access_type", "");
+    const auto response_type = json.value("response_type", "code");
+
+    if (redirect_uri.empty()) {
+        redirect_error(resp, redirect_err, 400, "invalid_request",
+                       "Parameter value redirect_uri cannot be empty.");
+        return;
+    }
+
+    auto* app = validate_client(resp, redirect_err, client_id, redirect_uri, scope);
+    if (!app)
+        return;
+
+    // Consent answers an authorization *code* request. Letting response_type through
+    // unchecked would mean a client that asked for an implicit token, was sent to the
+    // consent screen by prompt=consent, and came back here, silently receives a code
+    // instead — a different grant than the one it asked for.
+    if (response_type != "code") {
+        redirect_client_error(resp, redirect_uri, "unsupported_response_type",
+                              "Consent applies to the authorization code flow.", state);
+        return;
+    }
+
+    if (!access_type.empty() && access_type != "online" && access_type != "offline") {
+        redirect_client_error(resp, redirect_uri, "invalid_request",
+                              "Invalid access_type.", state);
+        return;
+    }
+
+    // CSRF. A signed-in browser carries its cookies wherever a third-party page
+    // sends it, and __Secure-AT is SameSite=None, so it rides along on a cross-site
+    // POST as well. Something has to separate the user's own click on the consent
+    // screen from someone else's page recording a consent in their name.
+    //
+    // That something is NOT the Origin header, however natural it looks here. The
+    // deployment recipe every project in this ecosystem uses rewrites it:
+    //
+    //     location ^~ /oauth2/ { proxy_set_header Origin "https://$host"; }
+    //
+    // and it cannot simply be dropped — handing the web client its client_secret in
+    // do_token is built on that substitution. So by the time a request reaches this
+    // function, Origin always reads as our own, whoever actually sent it. A check
+    // against it would pass for the attacker too: not bypassed, just blind.
+    //
+    // What survives the proxy is the cookie jar. The consent screen mints a random
+    // token, stores it in a SameSite=Strict __Host- cookie and echoes it in the form
+    // body; here the two must match. A cross-site POST fails twice over: SameSite
+    // keeps the cookie at home, and an attacker on another origin can neither read
+    // our cookie to copy it into the body nor write one under the __Host- prefix.
+    //
+    // Sec-Fetch-Site comes on top where the browser sends it — it is not rewritten
+    // by the proxy either, and it answers the question directly.
+    const auto fetch_site = req.header("Sec-Fetch-Site");
+    if (!fetch_site.empty() && fetch_site != "same-origin" && fetch_site != "none") {
+        redirect_error(resp, redirect_err, 403, "access_denied",
+                       "The request did not originate from the consent screen.");
+        return;
+    }
+
+    const auto token_cookie = req.cookie(kCookieConsentToken);
+    const auto token_form   = json.value("consent_token", "");
+
+    if (token_cookie.empty() || token_form.empty() || token_cookie != token_form) {
+        // The two refusals mean different things and the difference is worth having
+        // in the log: a missing half is usually our own doing — a consent screen on
+        // another origin, a cookie dropped because the site is not served over TLS,
+        // a remount between minting and submitting. Two halves that disagree is
+        // someone else's request. The user is told the same thing either way; there
+        // is nothing for them to act on, and nothing to hand an attacker.
+        if (token_cookie.empty() || token_form.empty()) {
+            log_warn("[AuthServer] consent refused: token {} missing (client_id={})",
+                     token_cookie.empty() ? "cookie" : "form field", client_id);
+        } else {
+            log_warn("[AuthServer] consent refused: token mismatch (client_id={})",
+                     client_id);
+        }
+
+        redirect_error(resp, redirect_err, 403, "access_denied",
+                       "The request did not originate from the consent screen.");
+        return;
+    }
+
+    // The original request, so that whichever page we send the browser to can
+    // resume the flow where it left off.
+    auto query = fmt::format("?client_id={}&response_type=code", url_encode(client_id));
+
+    query += "&redirect_uri=" + url_encode(redirect_uri);
+    if (!access_type.empty())
+        query += "&access_type=" + url_encode(access_type);
+    if (!scope.empty())
+        query += "&scope=" + url_encode(scope);
+    if (!state.empty())
+        query += "&state=" + url_encode(state);
+
+    // Same reasoning as in do_get: no invented fallback path, and no relative
+    // location either — an empty oauth2.identifier would make redirect_login read
+    // as "?client_id=…", which the browser resolves against /oauth2/consent and
+    // lands back on this endpoint as a GET, i.e. a 404.
+    const std::string redirect_login =
+        redirect_identifier.empty() ? std::string() : redirect_identifier + query;
+    const std::string consent_page =
+        redirect_consent.empty() ? std::string() : redirect_consent + query;
+
+    auto session = session_from_request(req);
+    if (session.empty()) {
+        // No session to consent with — sign in first, then come back.
+        if (redirect_login.empty()) {
+            redirect_client_error(resp, redirect_uri, "access_denied",
+                                  "Not signed in.", state);
+            return;
+        }
+        redirect(resp, redirect_login);
+        return;
+    }
+
+    issue_authorization_code(req, resp, session, client_id, redirect_uri,
+                             scope, state, access_type,
+                             redirect_login, consent_page, redirect_err,
+                             /* consent */ true);
+}
+
 // ─── issue_authorization_code ───────────────────────────────────────────────
 
 void AuthServer::issue_authorization_code(const HttpRequest& req, HttpResponse& resp,
@@ -691,12 +933,14 @@ void AuthServer::issue_authorization_code(const HttpRequest& req, HttpResponse& 
                                           const std::string& state,
                                           const std::string& access_type,
                                           const std::string& redirect_login,
-                                          const std::string& redirect_error_uri)
+                                          const std::string& redirect_consent,
+                                          const std::string& redirect_error_uri,
+                                          bool consent)
 {
     const auto agent = get_user_agent(req, "AuthServer/2.0");
     const auto host  = get_real_ip(req);
 
-    auto sql = fmt::format("SELECT * FROM daemon.authorization_code({}, {}, {}, {}, {}, {}, {}, {});",
+    auto sql = fmt::format("SELECT * FROM daemon.authorization_code({}, {}, {}, {}, {}, {}, {}, {}, {});",
                            pq_quote_literal(session),
                            pq_quote_literal(client_id),
                            pq_quote_literal(redirect_uri),
@@ -704,19 +948,22 @@ void AuthServer::issue_authorization_code(const HttpRequest& req, HttpResponse& 
                            state.empty() ? "null" : pq_quote_literal(state),
                            access_type.empty() ? "null" : pq_quote_literal(access_type),
                            pq_quote_literal(agent),
-                           pq_quote_literal(host));
+                           pq_quote_literal(host),
+                           consent ? "true" : "false");
 
     resp.set_deferred(true);
     auto conn = std::static_pointer_cast<HttpConnection>(req.connection_ctx);
 
     // Everything the callback needs, by value — the request is gone by then.
     auto login = redirect_login;
+    auto consent_page = redirect_consent;
     auto err_uri = redirect_error_uri;
     auto target = redirect_uri;
+    auto req_state = state;
 
     pool_.execute(std::move(sql),
         // on_result
-        [conn, target, login, err_uri](std::vector<PgResult> results) {
+        [conn, target, login, consent_page, err_uri, req_state](std::vector<PgResult> results) {
             HttpResponse r;
 
             if (results.empty() || !results[0].ok()) {
@@ -742,6 +989,23 @@ void AuthServer::issue_authorization_code(const HttpRequest& req, HttpResponse& 
                     // rather than showing an error page.
                     if (error == "access_denied" && !login.empty()) {
                         redirect(r, login);
+                        conn->send_response(r);
+                        return;
+                    }
+
+                    // The user has not granted this client access. That is a
+                    // question, not a failure: show the consent screen. Where the
+                    // site has none configured the question cannot be put, and the
+                    // client is told so on its own redirect_uri rather than the
+                    // user landing on our error page over someone else's problem.
+                    if (error == "consent_required") {
+                        if (consent_page.empty()) {
+                            redirect_client_error(r, target, "consent_required",
+                                                  "This server has no consent screen configured.",
+                                                  req_state);
+                        } else {
+                            redirect(r, consent_page);
+                        }
                         conn->send_response(r);
                         return;
                     }

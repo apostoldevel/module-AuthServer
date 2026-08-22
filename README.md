@@ -27,7 +27,7 @@ Key characteristics:
 
 | Action | What C++ does | Database call |
 |--------|--------------|---------------|
-| `authorize` / `auth` | Validates `client_id`, `redirect_uri`, `response_type`, `scope`, `access_type`, `prompt` against in-memory provider config. Then: with a live session (cookie `SID`, or the `sub` claim of `__Secure-AT`), `response_type=code` and no screen-naming `prompt` — issues the code and redirects to `redirect_uri?code=&state=`. With `prompt=consent` — redirects to `oauth2.consent`. Otherwise — to the login page (`oauth2.identifier` or `oauth2.secret`). | `daemon.authorization_code(session, client_id, redirect_uri, scope, state, access_type, agent, host)` (only when a session is present) |
+| `authorize` / `auth` | Validates `client_id`, `redirect_uri`, `response_type`, `scope`, `access_type`, `prompt`. The client is looked up **among clients of the `default` provider only**. Then: with a live session (cookie `SID`, or the `sub` claim of `__Secure-AT`), `response_type=code` and no screen-naming `prompt` — asks the database for a code. It answers `consent_required` unless the user has already granted this client the requested scopes, in which case the browser goes to `oauth2.consent`; otherwise the code is issued and the browser redirected to `redirect_uri?code=&state=`. With `prompt=consent` — straight to `oauth2.consent`. Otherwise — to the login page (`oauth2.identifier` or `oauth2.secret`). | `daemon.authorization_code(session, client_id, redirect_uri, scope, state, access_type, agent, host, consent)` (only when a session is present) |
 | `code` | Receives authorization code from external provider redirect. For external providers (e.g. Google): makes a direct C++ HTTP call to the provider's `token_uri` to exchange the code for a token, then verifies the returned JWT. | `daemon.login(token, agent, host, origin)` |
 | `callback` | Redirects to `oauth2.callback` from `conf/sites/*.json`. | None |
 | `identifier` | Extracts `value` from request body. Authenticates via: (1) `Authorization: Bearer` header, (2) `Session`+`Secret` headers, or (3) cookie `__Secure-AT`/`__Secure-SAT` selected by `X-Auth-Context` header. | `daemon.identifier(token, value)` |
@@ -37,6 +37,7 @@ Key characteristics:
 | Action | What C++ does | Database call |
 |--------|--------------|---------------|
 | `token` | Parses `client_id`/`client_secret` from body or `Authorization: Basic` header. For `web`/`service` apps: validates `redirect_uri` and `javascript_origins` against provider config. Calls DB with full payload as JSONB. | `daemon.token(client_id, client_secret, payload::jsonb, agent, host)` |
+| `consent` | The answer to the consent screen. Requires a request **body**, a `response_type` of `code`, a live session, and a double-submit token: the `__Host-CT` cookie must equal the `consent_token` field. Records the consent, then issues the code and redirects to `redirect_uri?code=&state=`. | `daemon.authorization_code(…, consent := true)` |
 | `identifier` | Same as GET identifier. | `daemon.identifier(token, value)` |
 
 **Identifier endpoint authentication priority:**
@@ -324,10 +325,134 @@ For authorization:
 ```http request
 GET /oauth2/authorize
 ```
+For recording the user's consent:
+```http request
+POST /oauth2/consent
+```
 For obtaining an access token:
 ```http request
 POST /oauth2/token
 ```
+
+### Single sign-on and consent
+
+`GET /oauth2/authorize` hands an authorization code straight to the client when the
+user is already signed in — no password, no second login. Two conditions gate it,
+and both are enforced in `daemon.authorization_code`, not in this module:
+
+1. **The client must belong to an internal provider.** An entry in
+   `conf/oauth2/google.json` — or a row in `oauth2.audience` under an external
+   provider — registers that provider so its tokens can be verified. It does not
+   make its holder a client of this installation, and it yields no codes for local
+   users. Only clients of the `default` provider reach this path.
+
+2. **The user must have granted this client consent** covering the requested scopes
+   (`db.oauth2_consent`). Being registered is not being permitted. Without a standing
+   consent the database answers `consent_required` and the browser is sent to the
+   consent screen instead.
+
+> **Behaviour change (db-platform 1.2.11).** Before this, a signed-in browser
+> arriving at `/oauth2/authorize` was handed a code with nothing asked of the user,
+> and any `client_id` present in `conf/oauth2/*.json` — under any provider — was
+> enough. Existing deployments will now show the consent screen once per client per
+> user — provided the site names `oauth2.consent`. Where it does not, the branch
+> answers `consent_required` on the client's `redirect_uri` instead of issuing a
+> code: closed, and visibly so. See **Consent screen location** below.
+
+`POST /oauth2/consent` is the answer to that screen. It records the consent and then
+issues the code exactly as the authorize endpoint would have.
+
+**It is a POST, and it carries a double-submit token.** The consent screen mints a
+random value, keeps it in a `SameSite=Strict`, `__Host-` prefixed cookie and repeats
+it in the form body; the endpoint requires the two to match. This is what separates
+the user's own click from a third-party page acting in their name — a signed-in
+browser carries its cookies wherever it is sent, and `__Secure-AT` is `SameSite=None`,
+so it rides along on a cross-site POST as well.
+
+> **Do not replace this with an `Origin` check.** It looks like the natural guard and
+> it is inert here: the deployment recipe these projects ship rewrites the header on
+> every `/oauth2/` request —
+> `location ^~ /oauth2/ { proxy_set_header Origin "https://$host"; }` — so by the time
+> the request arrives, `Origin` reads as the server's own whoever sent it. That
+> substitution cannot simply be removed either: handing the web client its
+> `client_secret` in `POST /oauth2/token` is built on it.
+
+The consent screen and the authorization server must be served from the **same
+origin**. The module's own SPA assumes this (`VITE_API_HOST` empty), and the cookie
+guard depends on it.
+
+> **The session cookies stay `SameSite=None`, and that is not an oversight.** It is
+> what makes single sign-on possible at all: arriving at `/oauth2/authorize` from a
+> client's site is a cross-site top-level navigation, and under `SameSite=Strict` the
+> browser would withhold the session, so the user would look signed out and the flow
+> would never start. Tighten `set_secure_cookies` and you do not harden this endpoint
+> — you disable the feature. `__Host-CT` can afford `Strict` precisely because it is
+> minted and spent within one origin.
+
+### Consent screen location
+
+The page is named by `oauth2.consent` in `conf/sites/*.json`:
+
+```json
+{
+  "hosts": ["auth.example.com"],
+  "root": "/opt/example/www",
+  "oauth2": {
+    "identifier": "/login",
+    "consent": "/authorize",
+    "error": "/error"
+  }
+}
+```
+
+**This key is required for the single sign-on branch to work.** There is no fallback
+path on purpose: the module would have to guess a URL on whichever host the request
+arrived at, and the screen exists only on the host that serves the SPA. A site
+without `oauth2.consent` answers `consent_required` on the client's `redirect_uri`
+instead — visible to whoever integrates, rather than a redirect into a 404.
+
+The module's own SPA serves the screen at `/authorize`.
+
+### Deployment
+
+**Apply the database patch and deploy the binary together.** The two halves do not
+work apart, and each failure is quiet in its own way:
+
+| Order | What happens |
+|-------|--------------|
+| Patch applied, old binary still running | `P00000011` drops the eight-argument `daemon.authorization_code`; the old binary still calls it with eight and gets `function does not exist` → 500 on the sign-on branch |
+| New binary, patch not applied | `db.oauth2_consent` is missing. The routine detects this and answers `server_error` with *"The authorization server is not fully migrated"*, and writes the patch number to the event log |
+| Routines updated without the patch (`runme.sh --update` alone) | Same as above. `--update` reloads routines but creates no tables; the patch is what creates the consent table and drops the old signature |
+
+Note that a database that has the new routines but not the patch still has the
+**old** eight-argument function unless the patch ran — and that function issues codes
+without asking anyone. Updating routines alone does not close the hole; applying the
+patch does. After migrating, `\df daemon.authorization_code` must show exactly one
+row.
+
+**Rate-limit the endpoint.** `POST /oauth2/consent` is anonymous and reachable
+without a session, and every refusal writes a line to the log. Under the usual nginx
+recipe the route falls under the general `^~ /oauth2/` block, which typically has no
+limit of its own — an exact-match location wins over the prefix:
+
+```nginx
+limit_req_zone $binary_remote_addr zone=auth_consent:10m rate=10r/m;
+
+location = /oauth2/consent {
+    limit_req zone=auth_consent burst=5 nodelay;
+    proxy_pass $backend_upstream;
+    # keep the Origin rewrite from the surrounding block — POST /oauth2/token
+    # depends on it; the consent guard deliberately does not.
+}
+```
+
+### A note on `redirect_uri`
+
+`redirect_uri` is compared to the client's registered values **exactly**, string for
+string. This is deliberate — do not "improve" it into a prefix or normalising match.
+A prefix comparison turns one registered `https://app.example.com/cb` into a licence
+for `https://app.example.com/cb.attacker.com`, and normalisation invites the whole
+family of URL-parsing disagreements between the checker and the browser.
 
 ### Grant Types
 

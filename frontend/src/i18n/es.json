@@ -47,6 +47,7 @@
   "consent": {
     "title": "Solicitud de autorización",
     "description": "{app} solicita acceso a tu cuenta",
+    "scopeIntro": "Acceso solicitado:",
     "scopeRead": "Leer la información de tu perfil",
     "allow": "Permitir",
     "deny": "Denegar"

@@ -62,10 +62,36 @@ private:
     void do_token(const HttpRequest& req, HttpResponse& resp);
     void do_identifier(const HttpRequest& req, HttpResponse& resp);
 
+    /// POST /oauth2/consent — the answer to the consent screen. Records the user's
+    /// consent for this client, then issues the code and redirects, exactly as the
+    /// authorize endpoint would have done had the consent already stood.
+    ///
+    /// POST, not GET, and guarded by a double-submit token: a signed-in browser
+    /// carries its cookies wherever a third-party page sends it, and __Secure-AT is
+    /// SameSite=None, so it rides along on a cross-site POST too. The Origin header
+    /// cannot be the guard here — the ecosystem's own nginx recipe overwrites it on
+    /// every /oauth2/ request, so it always reads as ours. See do_consent.
+    void do_consent(const HttpRequest& req, HttpResponse& resp);
+
+    /// Look up the client and validate redirect_uri and scope against its
+    /// registration. Returns nullptr after filling @p resp with the RFC 6749 error.
+    ///
+    /// The lookup is restricted to clients of the local provider: an entry under an
+    /// external provider registers that provider's tokens for verification and is
+    /// not a client of ours, so it must not reach the endpoints that act on behalf
+    /// of a signed-in user.
+    const OAuthApp* validate_client(HttpResponse& resp,
+                                    const std::string& redirect_err,
+                                    const std::string& client_id,
+                                    const std::string& redirect_uri,
+                                    const std::string& scope) const;
+
     /// Issue an authorization code for an already signed-in user and redirect the
     /// browser to @p redirect_uri with ?code=&state=. Deferred (async DB call).
     /// @p redirect_login is a complete login-page URL, used when the session
-    /// turns out to be stale.
+    /// turns out to be stale; @p redirect_consent a complete consent-page URL, used
+    /// when the user has not yet granted this client access. When @p consent is
+    /// true the user has just answered that screen and the consent is recorded.
     void issue_authorization_code(const HttpRequest& req, HttpResponse& resp,
                                   const std::string& session,
                                   const std::string& client_id,
@@ -74,7 +100,9 @@ private:
                                   const std::string& state,
                                   const std::string& access_type,
                                   const std::string& redirect_login,
-                                  const std::string& redirect_error);
+                                  const std::string& redirect_consent,
+                                  const std::string& redirect_error,
+                                  bool consent);
 
     /// Session code of the signed-in user, or empty if there is none.
     /// Reads the SID cookie; falls back to the "sub" claim of __Secure-AT.
@@ -88,6 +116,16 @@ private:
     static void redirect_error(HttpResponse& resp, std::string_view location,
                                int code, std::string_view error,
                                std::string_view message);
+
+    /// Deliver an OAuth2 error to the *client*, on its own redirect_uri, as
+    /// RFC 6749 §4.1.2.1 requires. Use once the client is known and its
+    /// redirect_uri validated; redirect_error sends the user to the site's error
+    /// page instead, which is right only while the client is not yet established.
+    static void redirect_client_error(HttpResponse& resp,
+                                      const std::string& redirect_uri,
+                                      std::string_view error,
+                                      std::string_view description,
+                                      const std::string& state);
 
     static void set_secure_cookies(HttpResponse& resp,
                                    std::string_view access_token,

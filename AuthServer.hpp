@@ -7,6 +7,7 @@
 #include "apostol/jwt.hpp"
 #include "apostol/oauth_providers.hpp"
 #include "apostol/pg.hpp"
+#include "apostol/service_token.hpp"
 #include "apostol/site_config.hpp"
 
 #include "apostol/fetch_client.hpp"
@@ -47,6 +48,11 @@ public:
     bool enabled() const override { return enabled_; }
     bool check_location(const HttpRequest& req) const override;
     void heartbeat(std::chrono::system_clock::time_point now) override;
+
+    /// Closes the service session. Every client_credentials grant creates a row in
+    /// db.session and nothing collects them, so leaving without this leaks one per
+    /// worker per restart.
+    void on_stop() override;
 
 protected:
     void init_methods() override;
@@ -179,6 +185,12 @@ private:
     // ── State ────────────────────────────────────────────────────────────────
     PgPool& pool_;
     FetchClient fetch_;
+
+    /// The module's own access token, for work a caller cannot authenticate for
+    /// yet — see do_identifier. Obtained server-side with the client credentials
+    /// grant, which RFC 6749 §4.4 permits only to confidential clients: this
+    /// module is one, the page it serves is not.
+    ServiceToken service_token_;
     const OAuthProviders& providers_;
     const SiteConfigs& sites_;
     bool enabled_;

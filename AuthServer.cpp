@@ -39,6 +39,9 @@ static std::string json_string(const nlohmann::json& j, const char* key)
     return it->dump();   // number, bool, etc. → their textual representation
 }
 
+// Identifies this module in db.session.agent and the event log.
+static constexpr const char* kUserAgent = "AuthServer/2.0";
+
 static constexpr const char* WEB_APP   = "web";
 static constexpr const char* SVC_APP   = "service";
 
@@ -63,12 +66,25 @@ static constexpr int kCookieMaxAge      = 60 * 86400; // 60 days
 AuthServer::AuthServer(Application& app)
     : pool_(app.db_pool())
     , fetch_(app.worker_loop())
+    , service_token_(app.db_pool(), kUserAgent, "127.0.0.1")
     , providers_(app.providers())
     , sites_(app.sites())
     , enabled_(true)
     , next_heartbeat_(std::chrono::system_clock::now())
 {
     load_allowed_origins(providers_);
+
+    // The service client is a confidential client: its secret lives in
+    // conf/oauth2 on this host and never leaves it.
+    //
+    // The scope is named rather than left to the server's default. They resolve to
+    // the same set today, but a token's scope decides what it may reach, and that
+    // belongs in sight rather than in a default.
+    if (const auto* svc = providers_.find_default(SVC_APP);
+        svc && !svc->client_id.empty() && !svc->client_secret.empty()) {
+        service_token_.set_credentials(svc->client_id, svc->client_secret,
+                                       join_strings(svc->scopes, " "));
+    }
 }
 
 // ─── check_location ─────────────────────────────────────────────────────────
@@ -91,8 +107,17 @@ void AuthServer::init_methods()
 
 // ─── heartbeat ──────────────────────────────────────────────────────────────
 
+void AuthServer::on_stop()
+{
+    service_token_.sign_out();
+}
+
 void AuthServer::heartbeat(std::chrono::system_clock::time_point now)
 {
+    // Every beat: cheap when the token is still good, and the only thing that
+    // keeps it available to do_identifier without blocking a request on a query.
+    service_token_.refresh_if_needed();
+
     if (now >= next_heartbeat_) {
         next_heartbeat_ = now + kHeartbeatInterval;
         check_providers();
@@ -1064,6 +1089,11 @@ void AuthServer::do_identifier(const HttpRequest& req, HttpResponse& resp)
     const auto auth_header = req.header("Authorization");
     std::string auth_token;
 
+    // Whether the module is vouching for this call with its own token. If the
+    // server rejects that token we must drop it, or every later request repeats
+    // the failure until its nominal life runs out.
+    bool anonymous = false;
+
     JwtKeyResolver key_resolver = [this](std::string_view kid) {
         return get_public_key(kid);
     };
@@ -1109,9 +1139,31 @@ void AuthServer::do_identifier(const HttpRequest& req, HttpResponse& resp)
             auto cookie_token = req.cookie(is_service ? kCookieSAT : kCookieAT);
 
             if (cookie_token.empty()) {
-                reply_oauth2_error(resp, HttpStatus::unauthorized,
-                                   "unauthorized", "Unauthorized.");
-                return;
+                // Nothing presented at all. This is the login and registration
+                // screens asking whether an identifier is taken, before anyone has
+                // signed in — there is no user credential to offer yet, and a page
+                // cannot hold a client credential either: RFC 6749 §2.1 makes a
+                // browser-based application a public client, and §4.4 reserves the
+                // client credentials grant to confidential ones. So the module,
+                // which is a confidential client, asks on its own behalf.
+                //
+                // The endpoint is therefore anonymous by design rather than by
+                // accident. Anyone could already reach it — the page used to mint a
+                // service token first, and nothing stopped another caller doing the
+                // same — so no new capability appears here. What does disappear is
+                // the cost of a probe and the trail it left: minting a token wrote
+                // rows to db.session and db.token, and an anonymous POST writes
+                // nothing. Rate-limiting this route is now the only control over
+                // enumeration; see README, Deployment.
+                if (!service_token_.valid()) {
+                    reply_oauth2_error(resp, HttpStatus::service_unavailable,
+                                       "temporarily_unavailable",
+                                       "The service account is not available.");
+                    return;
+                }
+
+                auth_token = service_token_.token();
+                anonymous  = true;
             }
 
             try {
@@ -1143,10 +1195,11 @@ void AuthServer::do_identifier(const HttpRequest& req, HttpResponse& resp)
 
     pool_.execute(std::move(sql),
         // on_result
-        [conn](std::vector<PgResult> results) {
+        [this, conn, anonymous](std::vector<PgResult> results) {
             HttpResponse r;
 
-            if (results.empty() || !results[0].ok()) {
+            if (results.empty() || !results[0].ok()
+                || results[0].rows() == 0 || results[0].columns() == 0) {
                 auto msg = results.empty() ? "no results"
                                            : results[0].error_message();
                 reply_error(r, HttpStatus::internal_server_error, msg);
@@ -1154,8 +1207,41 @@ void AuthServer::do_identifier(const HttpRequest& req, HttpResponse& resp)
                 return;
             }
 
+            const char* val = results[0].value(0, 0);
+            const std::string body = val ? val : "";
+
+            // daemon.identifier catches its own exceptions and answers with an
+            // error object over a *successful* query — a rejected token included.
+            // Passing that through as 200 would have the caller read {"error":…}
+            // as a result: `data.id !== null` is true for an absent id, so the
+            // registration screen would report every address as taken.
+            bool failed = false;
+            try {
+                auto j = nlohmann::json::parse(body);
+                failed = j.contains("error");
+            } catch (...) {
+                failed = true;
+            }
+
+            if (failed) {
+                if (anonymous) {
+                    // Most likely our own token: drop it so the next heartbeat
+                    // fetches a new one instead of repeating this for its whole life.
+                    service_token_.invalidate();
+                    log_warn("[AuthServer] identifier: service token rejected, dropped");
+                    reply_oauth2_error(r, HttpStatus::service_unavailable,
+                                       "temporarily_unavailable",
+                                       "The service account is not available.");
+                } else {
+                    r.set_status(HttpStatus::bad_request)
+                     .set_body(body, "application/json");
+                }
+                conn->send_response(r);
+                return;
+            }
+
             r.set_status(HttpStatus::ok)
-             .set_body(results[0].value(0, 0), "application/json");
+             .set_body(body, "application/json");
             conn->send_response(r);
         },
         // on_exception

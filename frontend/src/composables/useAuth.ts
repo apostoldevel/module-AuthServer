@@ -92,16 +92,22 @@ export function useAuth() {
   }
 
   /** POST /oauth2/identifier — check if email/phone/username exists */
+  /**
+   * POST /oauth2/identifier — check if email/phone/username exists.
+   *
+   * Sent without any client credential, deliberately. A browser-based
+   * application is a public client (RFC 6749 §2.1) and the client credentials
+   * grant is reserved to confidential clients (§4.4), so this page has nothing
+   * to authenticate with — and minting a service token here only ever meant
+   * asking the server to hand out a credential to whoever asked. The backend
+   * now performs that part on its own behalf.
+   */
   async function checkIdentifier(
     value: string,
   ): Promise<{ exists: boolean; username: string | null }> {
-    const token = await getServiceToken()
     const resp = await fetch(`${config.apiHost}/oauth2/identifier`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ value }),
     })
     if (!resp.ok) throw new Error('Identifier check failed')

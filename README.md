@@ -30,7 +30,7 @@ Key characteristics:
 | `authorize` / `auth` | Validates `client_id`, `redirect_uri`, `response_type`, `scope`, `access_type`, `prompt`. The client is looked up **among clients of the `default` provider only**. Then: with a live session (cookie `SID`, or the `sub` claim of `__Secure-AT`), `response_type=code` and no screen-naming `prompt` — asks the database for a code. It answers `consent_required` unless the user has already granted this client the requested scopes, in which case the browser goes to `oauth2.consent`; otherwise the code is issued and the browser redirected to `redirect_uri?code=&state=`. With `prompt=consent` — straight to `oauth2.consent`. Otherwise — to the login page (`oauth2.identifier` or `oauth2.secret`). | `daemon.authorization_code(session, client_id, redirect_uri, scope, state, access_type, agent, host, consent)` (only when a session is present) |
 | `code` | Receives authorization code from external provider redirect. For external providers (e.g. Google): makes a direct C++ HTTP call to the provider's `token_uri` to exchange the code for a token, then verifies the returned JWT. | `daemon.login(token, agent, host, origin)` |
 | `callback` | Redirects to `oauth2.callback` from `conf/sites/*.json`. | None |
-| `identifier` | Extracts `value` from request body. Authenticates via: (1) `Authorization: Bearer` header, (2) `Session`+`Secret` headers, or (3) cookie `__Secure-AT`/`__Secure-SAT` selected by `X-Auth-Context` header. | `daemon.identifier(token, value)` |
+| `identifier` | Extracts `value` from request body. Authenticates via: (1) `Authorization: Bearer` header, (2) `Session`+`Secret` headers, (3) cookie `__Secure-AT`/`__Secure-SAT` selected by `X-Auth-Context`, or (4) **nothing at all** — the login and registration screens ask this before anyone has signed in, so the module answers using its own service token (see below). | `daemon.identifier(token, value)` |
 
 **POST /oauth2/{action} routing:**
 
@@ -429,6 +429,43 @@ Note that a database that has the new routines but not the patch still has the
 without asking anyone. Updating routines alone does not close the hole; applying the
 patch does. After migrating, `\df daemon.authorization_code` must show exactly one
 row.
+
+### The service token, and why the browser no longer mints one
+
+`POST /oauth2/identifier` may be called with no credentials. That is not a relaxation:
+the screen that calls it — "is this address already registered?" — runs before anyone
+has signed in, and the page has nothing it could authenticate with.
+
+RFC 6749 §2.1 classifies a browser-based application as a **public client**,
+"incapable of maintaining the confidentiality of their credentials", and §4.4 states
+that "the client credentials grant type MUST only be used by confidential clients".
+A page therefore cannot hold a client secret, whatever it does with it — a secret
+shipped to a browser is readable in the developer tools, the bundle and the network
+tab. RFC 10017 (BCP 212) §6.1 names the pattern that replaces it: a backend that
+"interacts with the authorization server as a confidential OAuth client" on the
+page's behalf.
+
+So the module holds an access token of its own — `ServiceToken`, obtained with the
+client credentials grant using the `service` client from `conf/oauth2` and refreshed
+from `heartbeat()` — and uses it for this call. Previously the page obtained that
+token itself, which meant the server would hand a service credential to anybody who
+asked for one.
+
+**No new capability appears here** — the endpoint was already open to any caller
+willing to mint a token first. What does disappear is the cost of a probe and the
+trail it left: minting a token wrote rows to `db.session` and `db.token`, so misuse
+was visible and countable; an anonymous POST writes nothing. Rate-limiting this route
+is now the only control over identifier enumeration — apply the recipe below to
+`/oauth2/identifier` as well as `/oauth2/consent`.
+
+Requires a `service` entry in `conf/oauth2/default.json`. Unauthenticated callers get
+`503 temporarily_unavailable` whenever no token is held: for about a second after a
+worker starts or is restarted by SIGHUP, while the database is unreachable, and for
+as long as refreshes keep failing. Authenticated callers are unaffected.
+
+Partly presented credentials are now ignored rather than refused: a `Session` header
+without `Secret`, or `X-Auth-Context: service` without the `__Secure-SAT` cookie, used
+to give 401 and now falls through to the anonymous path.
 
 **Rate-limit the endpoint.** `POST /oauth2/consent` is anonymous and reachable
 without a session, and every refusal writes a line to the log. Under the usual nginx

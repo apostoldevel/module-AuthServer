@@ -369,7 +369,17 @@ the user's own click from a third-party page acting in their name — a signed-i
 browser carries its cookies wherever it is sent, and `__Secure-AT` is `SameSite=None`,
 so it rides along on a cross-site POST as well.
 
-> **Do not replace this with an `Origin` check.** It looks like the natural guard and
+> **`Origin` is not a credential on this server.** It is meaningful only when a
+> browser sets it, because a page cannot lie about where it came from. A caller
+> that is not a browser writes the header itself — `curl -H 'Origin: https://…'` —
+> and the value is public, it is the site's own name. `POST /oauth2/token` will
+> substitute a `web` or `service` client's secret for a request that presents a
+> matching Origin, which is safe only because every grant that reaches it still
+> needs a second credential the caller must already hold: a password, an
+> authorization code, a refresh token. `client_credentials` has no such second
+> credential and is therefore refused without an explicit `client_secret`.
+>
+> **Do not replace the consent guard with an `Origin` check either.** It looks like the natural guard and
 > it is inert here: the deployment recipe these projects ship rewrites the header on
 > every `/oauth2/` request —
 > `location ^~ /oauth2/ { proxy_set_header Origin "https://$host"; }` — so by the time

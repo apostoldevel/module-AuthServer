@@ -554,6 +554,32 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
         }
 
         if (auth_password.empty()) {
+            // Not for client_credentials. That grant *is* the client authenticating
+            // as itself — there is no user, no code and no refresh token behind it,
+            // so a substituted secret is the whole credential. Every other grant
+            // reaching this branch still needs a second one the caller must already
+            // hold: a password, an authorization code, a refresh token, a ticket.
+            //
+            // What makes the difference fatal rather than untidy is the guard this
+            // substitution leans on: the Origin header. Origin is worth something
+            // only when a browser sets it — a page cannot lie about where it came
+            // from. This grant has no browser in it, so the caller writes the header
+            // themselves: `curl -H 'Origin: https://auth.example.com'` is the entire
+            // attack, and the value is public, it is the site's own name. (The nginx
+            // recipe that rewrites Origin makes it easier still, since then any host
+            // will do, but removing that rewrite would not close this — the header
+            // is forgeable at the source.)
+            //
+            // Combined with the ecosystem's oauth2.sql, which does
+            // `CreateUser(code, secret, …)` for every audience and puts them all in
+            // the "system" group, an anonymous POST here returned a live session in
+            // that group. Verified on a running stand, not inferred.
+            if (grant_type == "client_credentials") {
+                reply_oauth2_error(resp, HttpStatus::unauthorized, "invalid_client",
+                                   "Client authentication is required for this grant.");
+                return;
+            }
+
             auto* app = providers_.find_by_client_id(auth_username);
             if (app && (app->name == WEB_APP || app->name == SVC_APP)) {
 

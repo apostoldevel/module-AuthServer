@@ -110,6 +110,10 @@ private:
                                   const std::string& redirect_error,
                                   bool consent);
 
+    /// Ask db-platform for a service token when ServiceToken says one is due, and
+    /// report the outcome back to it. Called from heartbeat().
+    void refresh_service_token();
+
     /// Session code of the signed-in user, or empty if there is none.
     /// Reads the SID cookie; falls back to the "sub" claim of __Secure-AT.
     std::string session_from_request(const HttpRequest& req) const;
@@ -190,7 +194,14 @@ private:
     /// yet — see do_identifier. Obtained server-side with the client credentials
     /// grant, which RFC 6749 §4.4 permits only to confidential clients: this
     /// module is one, the page it serves is not.
+    ///
+    /// ServiceToken itself holds only the lifecycle — when the token is good, when
+    /// to renew, how long to back off. Obtaining one is db-platform's business
+    /// (daemon.token, api.signout) and therefore lives here, in a module that
+    /// depends on db-platform, not in the framework, which does not.
     ServiceToken service_token_;
+
+    Logger& log_;
     const OAuthProviders& providers_;
     const SiteConfigs& sites_;
     bool enabled_;

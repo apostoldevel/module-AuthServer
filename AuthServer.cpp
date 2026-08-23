@@ -1735,7 +1735,18 @@ void AuthServer::fetch_access_token(std::shared_ptr<HttpConnection> conn,
                     // the cookies below, which is what it did before.
                     const auto* userinfo_app = providers_.find(provider_name, WEB_APP);
 
-                    if (json.contains("id_token")) {
+                    // By the value, not by the key. contains() is true for
+                    // "id_token": null and for a number, and both would take
+                    // this branch and end it — value() raises on the type, an
+                    // empty one fails the bearer parse — instead of falling
+                    // through to userinfo, which is where such a provider is
+                    // meant to go.
+                    const auto id_token = json.find("id_token");
+                    const bool has_id_token = id_token != json.end()
+                                           && id_token->is_string()
+                                           && !id_token->get<std::string>().empty();
+
+                    if (has_id_token) {
                         login(conn, redir, redir_error, agent, host, origin, json);
                     } else if (userinfo_app && !userinfo_app->userinfo_uri.empty()) {
                         fetch_userinfo(conn, provider_name,
@@ -1807,10 +1818,12 @@ std::string claim_as_string(const nlohmann::json& obj, const std::string& key)
         return {};
     if (it->is_string())
         return it->get<std::string>();
-    if (it->is_number_integer())
-        return std::to_string(it->get<std::int64_t>());
+    // Unsigned first: is_number_integer() is true for both, and reading an
+    // unsigned id past INT64_MAX as int64 turns it negative.
     if (it->is_number_unsigned())
         return std::to_string(it->get<std::uint64_t>());
+    if (it->is_number_integer())
+        return std::to_string(it->get<std::int64_t>());
     return {};
 }
 
@@ -1919,9 +1932,19 @@ void AuthServer::fetch_userinfo(std::shared_ptr<HttpConnection> conn,
                     return;
                 }
 
+                // Re-found because a SIGHUP between the request and this
+                // answer reloads providers_ and invalidates the pointer. Which
+                // is also why it is compared: the check above was made against
+                // the client_id captured before the request, and signing with
+                // an audience nobody checked would leave the whole point of
+                // that check behind.
                 const auto* app = providers_.find(provider_name, WEB_APP);
                 if (!app)
                     throw std::runtime_error("provider went away: " + provider_name);
+
+                if (app->client_id != client_id)
+                    throw std::runtime_error("provider was reconfigured mid-request: "
+                                             + provider_name);
 
                 auto token = sign_claims_jwt(*app, resp.body, sub);
 

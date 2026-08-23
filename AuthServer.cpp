@@ -320,6 +320,7 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
         const auto& scope         = req.param("scope");
         const auto& state         = req.param("state");
         const auto& prompt        = req.param("prompt");
+        const auto& max_age       = req.param("max_age");
 
         if (redirect_uri.empty()) {
             redirect_error(resp, redirect_err, 400, "invalid_request",
@@ -365,6 +366,18 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
             }
         }
 
+        // Validate max_age. OpenID Connect defines it as "Non-negative integer
+        // Seconds"; a value that is not one is a malformed request, not a hint to
+        // ignore — ignoring it would answer a demand for a fresh sign-in with a
+        // stale session and look like it had complied.
+        if (!max_age.empty()) {
+            if (max_age.find_first_not_of("0123456789") != std::string::npos) {
+                redirect_error(resp, redirect_err, 400, "invalid_request",
+                               "max_age must be a non-negative integer number of seconds.");
+                return;
+            }
+        }
+
         // Validate prompt
         parse_string_list(prompt, kPrompts, valid, invalid);
         if (!invalid.empty()) {
@@ -397,6 +410,8 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
             query += "&scope=" + url_encode(scope);
         if (!prompt.empty())
             query += "&prompt=" + url_encode(prompt);
+        if (!max_age.empty())
+            query += "&max_age=" + url_encode(max_age);
         if (!state.empty())
             query += "&state=" + url_encode(state);
 
@@ -420,6 +435,8 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
             consent_query += "&scope=" + url_encode(consent_scope);
         if (!prompt.empty())
             consent_query += "&prompt=" + url_encode(prompt);
+        if (!max_age.empty())
+            consent_query += "&max_age=" + url_encode(max_age);
         if (!state.empty())
             consent_query += "&state=" + url_encode(state);
 
@@ -442,7 +459,7 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
                 issue_authorization_code(req, resp, session, client_id, redirect_uri,
                                          scope, state, access_type,
                                          redirect_login, consent_page, redirect_err,
-                                         /* consent */ false);
+                                         /* consent */ false, max_age);
                 return;
             }
         }
@@ -976,7 +993,7 @@ void AuthServer::do_consent(const HttpRequest& req, HttpResponse& resp)
     issue_authorization_code(req, resp, session, client_id, redirect_uri,
                              scope, state, access_type,
                              redirect_login, consent_page, redirect_err,
-                             /* consent */ true);
+                             /* consent */ true, json.value("max_age", ""));
 }
 
 // ─── issue_authorization_code ───────────────────────────────────────────────
@@ -991,12 +1008,13 @@ void AuthServer::issue_authorization_code(const HttpRequest& req, HttpResponse& 
                                           const std::string& redirect_login,
                                           const std::string& redirect_consent,
                                           const std::string& redirect_error_uri,
-                                          bool consent)
+                                          bool consent,
+                                          const std::string& max_age)
 {
     const auto agent = get_user_agent(req, "AuthServer/2.0");
     const auto host  = get_real_ip(req);
 
-    auto sql = fmt::format("SELECT * FROM daemon.authorization_code({}, {}, {}, {}, {}, {}, {}, {}, {});",
+    auto sql = fmt::format("SELECT * FROM daemon.authorization_code({}, {}, {}, {}, {}, {}, {}, {}, {}, {});",
                            pq_quote_literal(session),
                            pq_quote_literal(client_id),
                            pq_quote_literal(redirect_uri),
@@ -1005,7 +1023,8 @@ void AuthServer::issue_authorization_code(const HttpRequest& req, HttpResponse& 
                            access_type.empty() ? "null" : pq_quote_literal(access_type),
                            pq_quote_literal(agent),
                            pq_quote_literal(host),
-                           consent ? "true" : "false");
+                           consent ? "true" : "false",
+                           max_age.empty() ? "null" : pq_quote_literal(max_age));
 
     resp.set_deferred(true);
     auto conn = std::static_pointer_cast<HttpConnection>(req.connection_ctx);
@@ -1049,6 +1068,16 @@ void AuthServer::issue_authorization_code(const HttpRequest& req, HttpResponse& 
                     auto message = err_obj.value("message", "Invalid request.");
                     if (code >= 10000) code = code / 100;
                     if (code < 0) code = 400;
+
+                    // The relying party asked for a fresher sign-in than this
+                    // session can offer. Sending it to the login page is what
+                    // satisfies the request; an error page would only tell the user
+                    // something went wrong when nothing did.
+                    if (error == "login_required" && !login.empty()) {
+                        redirect(r, login);
+                        conn->send_response(r);
+                        return;
+                    }
 
                     // The session did not hold up — ask the user to sign in again
                     // rather than showing an error page.

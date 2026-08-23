@@ -215,9 +215,22 @@ void AuthServer::reply_oauth2_error(HttpResponse& resp, HttpStatus status,
                                     std::string_view description)
 {
     if (status == HttpStatus::unauthorized) {
+        // RFC 6750 §3 defines three codes for this header — invalid_request,
+        // invalid_token, insufficient_scope — and nothing else. The header used to
+        // say access_denied whatever had happened, which is an RFC 6749 code from a
+        // different vocabulary: a client that reads WWW-Authenticate to decide
+        // whether to refresh finds a word it does not know and gives up.
+        //
+        // Anything outside that vocabulary becomes invalid_token, which is what a
+        // 401 from a bearer-token endpoint means when it means anything.
+        auto scheme_error = error;
+        if (scheme_error != "invalid_request" && scheme_error != "insufficient_scope")
+            scheme_error = "invalid_token";
+
         resp.set_header("WWW-Authenticate",
-                        fmt::format("Bearer error=\"access_denied\", "
+                        fmt::format("Bearer error=\"{}\", "
                                     "error_description=\"{}\"",
+                                    json_escape(scheme_error),
                                     json_escape(description)));
     }
 
@@ -1514,18 +1527,39 @@ void AuthServer::login(std::shared_ptr<HttpConnection> conn,
         try {
             clean_token = verify_and_resign_jwt(auth.token, providers_, key_resolver);
         } catch (const JwtExpiredError& e) {
+            // 401, not 403. RFC 6750 §3.1 gives invalid_token to a token that is
+            // "expired, revoked, malformed, or invalid for any other reason" and asks
+            // for 401 — the caller was not authenticated and can fix that by
+            // presenting a good token. 403 says the token was understood and the
+            // answer is still no, which tells a client to stop rather than refresh.
+            //
+            // The reason stays in the log. It names the issuer, the key id and the
+            // times involved, and the caller puts error_description in a redirect —
+            // where it reaches the address bar, the Referer of whatever loads next,
+            // and the browser history.
+            log_.warn("[AuthServer] token expired: {}", e.what());
             HttpResponse r;
-            redirect_error(r, redir_error, 403, "invalid_token", e.what());
+            redirect_error(r, redir_error, 401, "invalid_token",
+                           "The access token has expired.");
             conn->send_response(r);
             return;
         } catch (const JwtVerificationError& e) {
+            log_.warn("[AuthServer] token verification failed: {}", e.what());
             HttpResponse r;
-            redirect_error(r, redir_error, 400, "invalid_token", e.what());
+            redirect_error(r, redir_error, 401, "invalid_token",
+                           "The access token could not be verified.");
             conn->send_response(r);
             return;
         } catch (const std::exception& e) {
+            // A token that is not a token at all: jwt-cpp's own decode throws before
+            // verify_jwt reaches any of its typed errors, so a value with the wrong
+            // number of segments or broken base64 lands here. RFC 6750 §3.1 counts
+            // "malformed" among the reasons for invalid_token and asks for 401 —
+            // 400 called a rejected token a malformed request, which it is not.
+            log_.warn("[AuthServer] token rejected: {}", e.what());
             HttpResponse r;
-            redirect_error(r, redir_error, 400, "invalid_token", e.what());
+            redirect_error(r, redir_error, 401, "invalid_token",
+                           "The access token is malformed.");
             conn->send_response(r);
             return;
         }
@@ -1562,13 +1596,37 @@ void AuthServer::login(std::shared_ptr<HttpConnection> conn,
                         auto status = error_code_to_status(error_code);
                         switch (status) {
                         case HttpStatus::unauthorized:
-                            redirect_error(r, redir_error, 401, "unauthorized_client", error_message);
+                            // access_denied, not unauthorized_client. RFC 6749
+                            // §4.1.2.1 gives unauthorized_client one meaning — this
+                            // client may not request an authorization code — and a
+                            // 401 here is almost never that: it is an expired token,
+                            // a locked account, an expired password. Saying the
+                            // client is at fault sends the caller to fix the wrong
+                            // thing.
+                            //
+                            // The precise answer would be invalid_token for an
+                            // expired token and something else for a locked account,
+                            // and that cannot be told apart here: daemon.* returns
+                            // {code, message} and no error identifier, so 401-008
+                            // and 401-005 arrive indistinguishable. Carrying the
+                            // identifier through is a change to the daemon error
+                            // contract across every project, not something to slip
+                            // in here.
+                            redirect_error(r, redir_error, 401, "access_denied", error_message);
                             break;
                         case HttpStatus::forbidden:
                             redirect_error(r, redir_error, 403, "access_denied", error_message);
                             break;
                         case HttpStatus::internal_server_error:
-                            redirect_error(r, redir_error, 500, "server_error", error_message);
+                            // Not error_message. The others carry a catalogue text —
+                            // curated, localised, written to be read by whoever hit
+                            // the error. This one carries whatever ParseMessage made
+                            // of an arbitrary exception, which names schemas,
+                            // functions and sometimes values, and error_description
+                            // ends up in the address bar and the browser history.
+                            log_.error("[AuthServer] login: {}", error_message);
+                            redirect_error(r, redir_error, 500, "server_error",
+                                           "The authorization server could not complete the request.");
                             break;
                         default:
                             redirect_error(r, redir_error, 400, "invalid_request", error_message);

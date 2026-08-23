@@ -170,6 +170,15 @@ private:
                             const std::string& agent,
                             const std::string& host);
 
+    void fetch_userinfo(std::shared_ptr<HttpConnection> conn,
+                        const std::string& provider_name,
+                        const std::string& access_token,
+                        const std::string& redir,
+                        const std::string& redir_error,
+                        const std::string& agent,
+                        const std::string& host,
+                        const std::string& origin);
+
     void fetch_certs(const std::string& provider_name, const std::string& cert_uri);
     void fetch_providers();
     void check_providers();

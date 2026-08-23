@@ -1726,8 +1726,21 @@ void AuthServer::fetch_access_token(std::shared_ptr<HttpConnection> conn,
             if (resp.status_code == 200) {
                 try {
                     auto json = nlohmann::json::parse(resp.body);
-                    if (provider_name == "google") {
+
+                    // By what the provider answered, not by its name. A provider
+                    // that returns an id_token is verified and re-signed the way
+                    // Google is; one that returns none but has a userinfo
+                    // endpoint configured is asked for the profile instead. Our
+                    // own token endpoint returns neither and falls through to
+                    // the cookies below, which is what it did before.
+                    const auto* userinfo_app = providers_.find(provider_name, WEB_APP);
+
+                    if (json.contains("id_token")) {
                         login(conn, redir, redir_error, agent, host, origin, json);
+                    } else if (userinfo_app && !userinfo_app->userinfo_uri.empty()) {
+                        fetch_userinfo(conn, provider_name,
+                                       json.value("access_token", ""),
+                                       redir, redir_error, agent, host, origin);
                     } else {
                         // Non-Google provider: set cookies + redirect directly
                         HttpResponse r;
@@ -1770,6 +1783,155 @@ void AuthServer::fetch_access_token(std::shared_ptr<HttpConnection> conn,
 
                 HttpResponse r;
                 redirect_error(r, redir_error, resp.status_code, error, error_desc);
+                conn->send_response(r);
+            }
+        },
+        // on_error
+        [conn, redir_error](std::string_view error) {
+            HttpResponse r;
+            redirect_error(r, redir_error, 500, "server_error", error);
+            conn->send_response(r);
+        });
+}
+
+namespace {
+
+// A provider names its fields as it likes, and types them as it likes: Yandex
+// sends the user id as a string, another may send a number. nlohmann's value()
+// throws on the mismatch, and a login that answers 500 because an id arrived
+// unquoted is a bad way to learn that. Read whatever is there as text.
+std::string claim_as_string(const nlohmann::json& obj, const std::string& key)
+{
+    auto it = obj.find(key);
+    if (it == obj.end() || it->is_null())
+        return {};
+    if (it->is_string())
+        return it->get<std::string>();
+    if (it->is_number_integer())
+        return std::to_string(it->get<std::int64_t>());
+    if (it->is_number_unsigned())
+        return std::to_string(it->get<std::uint64_t>());
+    return {};
+}
+
+} // namespace
+
+// A provider that issues no id_token: the profile comes from a userinfo
+// endpoint as plain JSON, and is signed here into the JWT that daemon.login
+// accepts. Claim names are not touched — the database maps them per provider.
+//
+// The audience check is the whole reason this can be done at all. An access
+// token is a bearer token: the provider hands the same kind to every client it
+// has, and its userinfo endpoint answers to all of them. Without checking who
+// the token was issued to, anyone holding a token from any other application of
+// the same provider signs in here as that provider's user. An id_token settles
+// this with its aud claim; here the answer has to say it, and we have to look.
+
+void AuthServer::fetch_userinfo(std::shared_ptr<HttpConnection> conn,
+                                const std::string& provider_name,
+                                const std::string& access_token,
+                                const std::string& redir,
+                                const std::string& redir_error,
+                                const std::string& agent,
+                                const std::string& host,
+                                const std::string& origin)
+{
+    const auto* app = providers_.find(provider_name, WEB_APP);
+
+    if (!app || app->userinfo_uri.empty() || app->userinfo_audience.empty()) {
+        // Refusing rather than skipping the check: a provider configured with a
+        // userinfo endpoint and no field naming its audience cannot be verified,
+        // and signing someone in on an unverifiable token is the failure this
+        // whole path exists to avoid.
+        log_.error("[AuthServer] userinfo: provider \"{}\" is configured without "
+                   "userinfo_uri or userinfo_audience", provider_name);
+        HttpResponse r;
+        redirect_error(r, redir_error, 500, "server_error",
+                       "The authorization server could not complete the request.");
+        conn->send_response(r);
+        return;
+    }
+
+    if (access_token.empty()) {
+        HttpResponse r;
+        redirect_error(r, redir_error, 401, "invalid_token",
+                       "The provider returned no access token.");
+        conn->send_response(r);
+        return;
+    }
+
+    const auto uri       = app->userinfo_uri;
+    const auto audience  = app->userinfo_audience;
+    const auto subject   = app->userinfo_subject.empty() ? std::string("sub")
+                                                         : app->userinfo_subject;
+    const auto client_id = app->client_id;
+
+    fetch_.get(uri,
+        {{"Authorization", app->userinfo_scheme + " " + access_token}},
+        // on_done
+        [this, conn, redir, redir_error, provider_name, agent, host, origin,
+         uri, audience, subject, client_id](FetchResponse resp) {
+            HttpResponse r;
+
+            if (resp.status_code != 200) {
+                // The provider says the token is not good, and its reason is
+                // its own business: it names an endpoint and a client that the
+                // end user has nothing to do with, and error_description ends
+                // up in the address bar.
+                log_.warn("[AuthServer] userinfo {}: {} {}", uri, resp.status_code,
+                          resp.body.substr(0, 256));
+                redirect_error(r, redir_error, 401, "invalid_token",
+                               "The provider rejected the access token.");
+                conn->send_response(r);
+                return;
+            }
+
+            try {
+                auto profile = nlohmann::json::parse(resp.body);
+
+                if (!profile.is_object())
+                    throw std::runtime_error("userinfo answer is not an object");
+
+                const auto issued_to = claim_as_string(profile, audience);
+
+                // RFC 6750 §3.1 names a token issued to another client among the
+                // reasons for invalid_token, and asks for 401.
+                if (issued_to.empty() || issued_to != client_id) {
+                    log_.warn("[AuthServer] userinfo {}: token issued to \"{}\", "
+                              "not to this application", provider_name, issued_to);
+                    redirect_error(r, redir_error, 401, "invalid_token",
+                                   "The access token was issued to another application.");
+                    conn->send_response(r);
+                    return;
+                }
+
+                const auto sub = claim_as_string(profile, subject);
+
+                if (sub.empty()) {
+                    // Without it there is nothing to key the local identity by,
+                    // and every login through this provider would be a new
+                    // account — or, worse, the same one.
+                    log_.error("[AuthServer] userinfo {}: no \"{}\" in the answer",
+                               provider_name, subject);
+                    redirect_error(r, redir_error, 500, "server_error",
+                                   "The authorization server could not complete the request.");
+                    conn->send_response(r);
+                    return;
+                }
+
+                const auto* app = providers_.find(provider_name, WEB_APP);
+                if (!app)
+                    throw std::runtime_error("provider went away: " + provider_name);
+
+                auto token = sign_claims_jwt(*app, resp.body, sub);
+
+                login(conn, redir, redir_error, agent, host, origin,
+                      nlohmann::json{{"token_type", "Bearer"}, {"id_token", token}});
+
+            } catch (const std::exception& e) {
+                log_.error("[AuthServer] userinfo {}: {}", provider_name, e.what());
+                redirect_error(r, redir_error, 500, "server_error",
+                               "The authorization server could not complete the request.");
                 conn->send_response(r);
             }
         },

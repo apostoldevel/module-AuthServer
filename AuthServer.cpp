@@ -1280,25 +1280,30 @@ void AuthServer::do_identifier(const HttpRequest& req, HttpResponse& resp)
 
                 auth_token = service_token_.token();
                 anonymous  = true;
-            }
 
-            try {
-                verify_jwt(cookie_token, providers_, key_resolver);
-            } catch (const JwtExpiredError&) {
-                reply_oauth2_error(resp, HttpStatus::forbidden,
-                                   "forbidden", "Token expired.");
-                return;
-            } catch (const JwtVerificationError& e) {
-                reply_oauth2_error(resp, HttpStatus::unauthorized,
-                                   "unauthorized", "Unauthorized.");
-                return;
-            } catch (const std::exception& e) {
-                reply_oauth2_error(resp, HttpStatus::unauthorized,
-                                   "unauthorized", "Unauthorized.");
-                return;
-            }
+            } else {
+                // A cookie was presented, so it has to hold up. This verification
+                // belongs to the cookie alone: running it on the anonymous path
+                // would hand verify_jwt an empty string, and the module's own token
+                // — already in auth_token above — needs no checking by us.
+                try {
+                    verify_jwt(cookie_token, providers_, key_resolver);
+                } catch (const JwtExpiredError&) {
+                    reply_oauth2_error(resp, HttpStatus::forbidden,
+                                       "forbidden", "Token expired.");
+                    return;
+                } catch (const JwtVerificationError& e) {
+                    reply_oauth2_error(resp, HttpStatus::unauthorized,
+                                       "unauthorized", "Unauthorized.");
+                    return;
+                } catch (const std::exception& e) {
+                    reply_oauth2_error(resp, HttpStatus::unauthorized,
+                                       "unauthorized", "Unauthorized.");
+                    return;
+                }
 
-            auth_token = std::move(cookie_token);
+                auth_token = std::move(cookie_token);
+            }
         }
     }
 
@@ -1309,6 +1314,8 @@ void AuthServer::do_identifier(const HttpRequest& req, HttpResponse& resp)
     resp.set_deferred(true);
     auto conn = std::static_pointer_cast<HttpConnection>(req.connection_ctx);
 
+    // quiet: the statement carries a bearer token — the caller's or the module's —
+    // and PgPool logs statement text at debug, which this application always has on.
     pool_.execute(std::move(sql),
         // on_result
         [this, conn, anonymous](std::vector<PgResult> results) {
@@ -1365,7 +1372,8 @@ void AuthServer::do_identifier(const HttpRequest& req, HttpResponse& resp)
             HttpResponse r;
             reply_error(r, HttpStatus::internal_server_error, error);
             conn->send_response(r);
-        });
+        },
+        /*quiet=*/true);
 }
 
 // ─── External providers ─────────────────────────────────────────────────────

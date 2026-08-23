@@ -150,7 +150,8 @@ private:
                                     std::string_view refresh_token);
 
     // ── JWT ──────────────────────────────────────────────────────────────────
-    std::string get_public_key(std::string_view kid) const;
+    std::string get_public_key(std::string_view kid,
+                               std::string_view provider) const;
 
     // ── External providers ──────────────────────────────────────────────────
     void login(std::shared_ptr<HttpConnection> conn,

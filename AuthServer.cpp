@@ -297,16 +297,22 @@ void AuthServer::set_service_cookies(HttpResponse& resp,
 
 // ─── JWT ────────────────────────────────────────────────────────────────────
 
-std::string AuthServer::get_public_key(std::string_view kid) const
+std::string AuthServer::get_public_key(std::string_view kid,
+                                       std::string_view provider) const
 {
-    for (const auto& [provider_name, cache] : key_cache_) {
-        if (cache.status == ProviderKeyCache::Status::success) {
-            auto it = cache.keys.find(std::string(kid));
-            if (it != cache.keys.end())
-                return it->second;
-        }
-    }
-    return {};
+    // Only this provider's keys. The kid comes out of the token being checked,
+    // and the token also names the audience that selected this provider — so
+    // searching every cache would let a key published by one provider verify a
+    // token claiming another's audience, which is the audience check undone.
+    // With one asymmetric provider it never showed; the second one is where it
+    // would have.
+    auto cache = key_cache_.find(std::string(provider));
+    if (cache == key_cache_.end() ||
+        cache->second.status != ProviderKeyCache::Status::success)
+        return {};
+
+    auto it = cache->second.keys.find(std::string(kid));
+    return it != cache->second.keys.end() ? it->second : std::string();
 }
 
 // ─── do_get ─────────────────────────────────────────────────────────────────
@@ -875,8 +881,8 @@ std::string AuthServer::session_from_request(const HttpRequest& req) const
     if (token.empty())
         return {};
 
-    JwtKeyResolver key_resolver = [this](std::string_view kid) {
-        return get_public_key(kid);
+    JwtKeyResolver key_resolver = [this](std::string_view kid, std::string_view provider) {
+        return get_public_key(kid, provider);
     };
 
     try {
@@ -1322,8 +1328,8 @@ void AuthServer::do_identifier(const HttpRequest& req, HttpResponse& resp)
     // the failure until its nominal life runs out.
     bool anonymous = false;
 
-    JwtKeyResolver key_resolver = [this](std::string_view kid) {
-        return get_public_key(kid);
+    JwtKeyResolver key_resolver = [this](std::string_view kid, std::string_view provider) {
+        return get_public_key(kid, provider);
     };
 
     if (!auth_header.empty()) {
@@ -1519,8 +1525,8 @@ void AuthServer::login(std::shared_ptr<HttpConnection> conn,
             return;
         }
 
-        JwtKeyResolver key_resolver = [this](std::string_view kid) {
-            return get_public_key(kid);
+        JwtKeyResolver key_resolver = [this](std::string_view kid, std::string_view provider) {
+            return get_public_key(kid, provider);
         };
 
         std::string clean_token;

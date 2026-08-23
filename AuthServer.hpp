@@ -109,7 +109,8 @@ private:
                                   const std::string& redirect_consent,
                                   const std::string& redirect_error,
                                   bool consent,
-                                  const std::string& max_age = {});
+                                  const std::string& max_age = {},
+                                  bool silent = false);
 
     /// Ask db-platform for a service token when ServiceToken says one is due, and
     /// report the outcome back to it. Called from heartbeat().

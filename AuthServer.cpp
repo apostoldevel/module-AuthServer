@@ -237,8 +237,16 @@ void AuthServer::redirect_error(HttpResponse& resp, std::string_view location,
         reply_oauth2_error(resp, error_code_to_status(code), error, message);
         return;
     }
+    // Both values encoded, and error is the one that matters: it arrives from a
+    // query parameter on /oauth2/code, from an external identity provider's JSON,
+    // and from the database — three sources outside this process — and lands in a
+    // Location header. Unencoded, a CR LF in it ended the header and let the caller
+    // write further headers of its own onto this origin. libapostol now truncates
+    // header values at the first control byte, so this is the second of two locks
+    // on the same door; it is also simply how a query string is built.
     auto url = fmt::format("{}?code={}&error={}&error_description={}",
-                           location, code, error, url_encode(message));
+                           location, code, url_encode(error),
+                           url_encode(message));
     redirect(resp, url);
 }
 
@@ -306,8 +314,11 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
 
     static const std::vector<std::string> kResponseTypes{"code", "token"};
     static const std::vector<std::string> kAccessTypes{"online", "offline"};
+    // "login" is the OpenID Connect Core §3.1.2.1 spelling; "signin" is this
+    // server's, kept because clients use it. Both name the same screen — see
+    // wants_prompt below, which reads them as one.
     static const std::vector<std::string> kPrompts{
-        "none", "signin", "secret", "consent", "select_account"};
+        "none", "login", "signin", "secret", "consent", "select_account"};
 
     std::vector<std::string> valid, invalid;
 
@@ -334,24 +345,82 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
         if (!app)
             return;
 
+        // prompt is read first, before anything else is validated, because it
+        // decides how every error below is answered: prompt=none means the client
+        // asked to be told rather than to have its user interrupted, and an error
+        // page is an interruption. Its own token list, not the shared valid/invalid
+        // pair — response_type is parsed after this and would overwrite it.
+        std::vector<std::string> prompts, bad_prompts;
+
+        parse_string_list(prompt, kPrompts, prompts, bad_prompts);
+        if (!bad_prompts.empty()) {
+            // Whether this client would have accepted a silent answer cannot be
+            // known from a prompt that did not parse, so this one keeps the screen.
+            redirect_error(resp, redirect_err, 400, "unsupported_prompt_type",
+                           fmt::format("Some requested prompt type were invalid: "
+                                       "{{valid=[{}], invalid=[{}]}}",
+                                       join_strings(prompts, ", "),
+                                       join_strings(bad_prompts, ", ")));
+            return;
+        }
+
+        // A prompt that names a screen means the client wants that screen shown,
+        // even when the user is already signed in.
+        const auto wants_prompt = [&prompts](std::string_view value) {
+            return std::find(prompts.begin(), prompts.end(), value) != prompts.end();
+        };
+
+        const bool wants_signin = wants_prompt("signin") || wants_prompt("login");
+
+        const bool silent = wants_prompt("none");
+
+        // Where a rejected request goes. client_id and redirect_uri are validated
+        // above, which is what RFC 6749 §4.1.2.1 and OpenID Connect Core §3.1.2.6
+        // require before an error may be sent to the client's own address instead of
+        // shown to the user. Below that line the answer is the error page, as before.
+        const auto fail = [&](int code, std::string_view error,
+                              std::string_view description) {
+            if (silent)
+                redirect_client_error(resp, redirect_uri, error, description, state);
+            else
+                redirect_error(resp, redirect_err, code, error, description);
+        };
+
+        // prompt=none says "show the user nothing at all". Pairing it with a value
+        // that names a screen asks for both, and OpenID Connect Core §3.1.2.1 makes
+        // that an error rather than letting the server pick a winner.
+        if (silent && prompts.size() > 1) {
+            fail(400, "invalid_request",
+                 "prompt=none must not be combined with any other prompt value.");
+            return;
+        }
+
         // Validate response_type
         parse_string_list(response_type, kResponseTypes, valid, invalid);
         if (!invalid.empty()) {
-            redirect_error(resp, redirect_err, 400, "unsupported_response_type",
-                           fmt::format("Some requested response type were invalid: "
-                                       "{{valid=[{}], invalid=[{}]}}",
-                                       join_strings(valid, ", "),
-                                       join_strings(invalid, ", ")));
+            fail(400, "unsupported_response_type",
+                 fmt::format("Some requested response type were invalid: "
+                             "{{valid=[{}], invalid=[{}]}}",
+                             join_strings(valid, ", "),
+                             join_strings(invalid, ", ")));
             return;
         }
 
         // `valid` is reused by the parses below — capture what we need now.
         const bool wants_code =
             std::find(valid.begin(), valid.end(), "code") != valid.end();
+        const bool wants_token =
+            std::find(valid.begin(), valid.end(), "token") != valid.end();
 
-        // Validate access_type
+        // Validate access_type.
+        //
+        // Meaningless only when the response is purely implicit: there is no code to
+        // exchange, so there is no refresh token for offline access to describe.
+        // A hybrid "code token" still has the code half, and access_type still
+        // applies to it — which the previous whole-string comparison happened to get
+        // right and a plain token-wise test would have got wrong.
         auto access_types = kAccessTypes;
-        if (response_type == "token")
+        if (wants_token && !wants_code)
             access_types.clear();
 
         if (!access_type.empty()) {
@@ -360,8 +429,8 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
                 if (at == access_type) { at_ok = true; break; }
             }
             if (!at_ok) {
-                redirect_error(resp, redirect_err, 400, "invalid_request",
-                               fmt::format("Invalid access_type: {}", access_type));
+                fail(400, "invalid_request",
+                     fmt::format("Invalid access_type: {}", access_type));
                 return;
             }
         }
@@ -371,41 +440,39 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
         // ignore — ignoring it would answer a demand for a fresh sign-in with a
         // stale session and look like it had complied.
         if (!max_age.empty()) {
-            if (max_age.find_first_not_of("0123456789") != std::string::npos) {
-                redirect_error(resp, redirect_err, 400, "invalid_request",
-                               "max_age must be a non-negative integer number of seconds.");
+            // Digits, and few enough of them to be an integer on the other side.
+            // daemon.authorization_code takes pMaxAge integer: "99999999999999" is
+            // all digits, passes a syntax check, and then overflows in the database
+            // — answering a malformed request with server_error, which says the
+            // server broke when in fact the client sent nonsense.
+            const bool digits =
+                max_age.find_first_not_of("0123456789") == std::string::npos;
+            const bool in_range =
+                max_age.size() <= 10 && (max_age.size() < 10 || max_age <= "2147483647");
+
+            if (!digits || !in_range) {
+                fail(400, "invalid_request",
+                     "max_age must be a non-negative integer number of seconds.");
                 return;
             }
         }
 
-        // Validate prompt
-        parse_string_list(prompt, kPrompts, valid, invalid);
-        if (!invalid.empty()) {
-            redirect_error(resp, redirect_err, 400, "unsupported_prompt_type",
-                           fmt::format("Some requested prompt type were invalid: "
-                                       "{{valid=[{}], invalid=[{}]}}",
-                                       join_strings(valid, ", "),
-                                       join_strings(invalid, ", ")));
-            return;
-        }
-
-        // A prompt that names a screen means the client wants that screen shown,
-        // even when the user is already signed in.
-        const auto wants_prompt = [&valid](std::string_view value) {
-            return std::find(valid.begin(), valid.end(), value) != valid.end();
-        };
-
-        const bool interactive = wants_prompt("signin") || wants_prompt("secret") ||
+        const bool interactive = wants_signin || wants_prompt("secret") ||
                                  wants_prompt("consent") || wants_prompt("select_account");
 
         // The original request, ready to be appended to whichever page we send
         // the browser to — so that the flow resumes where it left off.
-        auto query = fmt::format("?client_id={}&response_type={}", client_id, response_type);
+        // Encoded like every other parameter here. These two were the exception, and
+        // the result goes straight into a Location header — parse_string_list keeps
+        // response_type to a known word, but client_id is whatever was registered,
+        // and a header is no place to find out that assumption was wrong.
+        auto query = fmt::format("?client_id={}&response_type={}",
+                                 url_encode(client_id), url_encode(response_type));
 
         if (!redirect_uri.empty())
             query += "&redirect_uri=" + url_encode(redirect_uri);
         if (!access_type.empty())
-            query += "&access_type=" + access_type;
+            query += "&access_type=" + url_encode(access_type);
         if (!scope.empty())
             query += "&scope=" + url_encode(scope);
         if (!prompt.empty())
@@ -415,8 +482,12 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
         if (!state.empty())
             query += "&state=" + url_encode(state);
 
+        // wants_prompt, not prompt == "secret": prompt is a space-separated list, so
+        // comparing the whole string means "prompt=secret signin" matches neither
+        // branch and lands on the identifier page — the one screen the client did
+        // not ask for. The same list is already read token-wise three lines above.
         const std::string redirect_login =
-            ((prompt == "secret") ? redirect_secret : redirect_identifier) + query;
+            (wants_prompt("secret") ? redirect_secret : redirect_identifier) + query;
 
         // What the user will be asked to agree to. An empty scope is not "nothing" —
         // the database expands it to every scope there is — so resolve it here, to
@@ -453,15 +524,38 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
         // comes back here, and every answer used to be "go to the login page".
         // Whether the user has actually granted this client access is decided in
         // daemon.authorization_code, which answers consent_required when they have not.
+        // Read once: on a request with no SID cookie this verifies a JWT, and the
+        // silent branch below asks the same question again.
+        const auto session = session_from_request(req);
+
         if (wants_code && !interactive) {
-            auto session = session_from_request(req);
             if (!session.empty()) {
                 issue_authorization_code(req, resp, session, client_id, redirect_uri,
                                          scope, state, access_type,
                                          redirect_login, consent_page, redirect_err,
-                                         /* consent */ false, max_age);
+                                         /* consent */ false, max_age, silent);
                 return;
             }
+        }
+
+        // Nothing above could be answered without a screen, and prompt=none forbids
+        // one. The client hears why on its own redirect_uri: it asked to be told
+        // rather than to have its user interrupted, and OpenID Connect Core §3.1.2.1
+        // names both answers. login_required when there is no session to work from;
+        // interaction_required when the response type this server can issue silently
+        // — an authorization code — was not the one asked for.
+        if (silent) {
+            // Two ways to get here. Without a session there is nobody to answer for,
+            // and the client must send its user to sign in. With one, the response
+            // type asked for is not the authorization code this server issues
+            // silently — which is a statement about the request, not about the user,
+            // so unsupported_response_type says more than interaction_required would.
+            if (session.empty())
+                fail(401, "login_required", "The user is not signed in.");
+            else
+                fail(400, "unsupported_response_type",
+                     "Only response_type=code can be answered without user interaction.");
+            return;
         }
 
         // Redirect to the login — or, when asked for, the consent — page
@@ -712,7 +806,9 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
                     int code = err_obj.value("code", 400);
                     auto error = err_obj.value("error", "invalid_request");
                     auto message = err_obj.value("message", "Invalid request.");
-                    if (code >= 10000) code = code / 100;
+                    // ParseMessage already answers with a three-digit code; this
+                    // divided one that never arrives.
+
                     if (code < 0) code = 400;
 
                     auto status = error_code_to_status(code);
@@ -1009,7 +1105,8 @@ void AuthServer::issue_authorization_code(const HttpRequest& req, HttpResponse& 
                                           const std::string& redirect_consent,
                                           const std::string& redirect_error_uri,
                                           bool consent,
-                                          const std::string& max_age)
+                                          const std::string& max_age,
+                                          bool silent)
 {
     const auto agent = get_user_agent(req, "AuthServer/2.0");
     const auto host  = get_real_ip(req);
@@ -1040,7 +1137,7 @@ void AuthServer::issue_authorization_code(const HttpRequest& req, HttpResponse& 
     // quiet: the statement carries the user's session code.
     pool_.execute(std::move(sql),
         // on_result
-        [self, conn, target, login, consent_page, err_uri, req_state](std::vector<PgResult> results) {
+        [self, conn, target, login, consent_page, err_uri, req_state, silent](std::vector<PgResult> results) {
             HttpResponse r;
 
             if (results.empty() || !results[0].ok()) {
@@ -1066,8 +1163,49 @@ void AuthServer::issue_authorization_code(const HttpRequest& req, HttpResponse& 
                     int code = err_obj.value("code", 400);
                     auto error = err_obj.value("error", "invalid_request");
                     auto message = err_obj.value("message", "Invalid request.");
-                    if (code >= 10000) code = code / 100;
+                    // ParseMessage already answers with a three-digit code; this
+                    // divided one that never arrives.
+
                     if (code < 0) code = 400;
+
+                    // prompt=none forbids a screen, so every outcome goes to the
+                    // client on its own redirect_uri — not only the three that have
+                    // a screen to skip. OpenID Connect Core §3.1.2.6 asks for this
+                    // once client_id and redirect_uri have been validated, and they
+                    // were, before this statement was ever built. Without it a
+                    // silent refresh in a hidden iframe loaded our error page and
+                    // hung until the relying party timed out — the one outcome
+                    // prompt=none exists to prevent.
+                    //
+                    // Written as a fall-through rather than as cases, so that a new
+                    // error code in daemon.authorization_code cannot reopen it.
+                    //
+                    // The database's own message is not passed on: it names schemas,
+                    // functions and sometimes values, and this text ends up in the
+                    // client's address bar. Same policy as the branch above.
+                    if (silent) {
+                        std::string_view client_error = error;
+                        std::string_view desc =
+                            "The authorization request could not be completed.";
+
+                        if (error == "login_required") {
+                            desc = "The session is older than the requested max_age.";
+                        } else if (error == "access_denied") {
+                            // Silently, a session that did not hold up is
+                            // indistinguishable from no session at all, and the
+                            // answer is the same: send the user to sign in.
+                            // access_denied would say the user refused, which is
+                            // not what happened.
+                            client_error = "login_required";
+                            desc = "The user is not signed in.";
+                        } else if (error == "consent_required") {
+                            desc = "The user has not granted this client access.";
+                        }
+
+                        redirect_client_error(r, target, client_error, desc, req_state);
+                        conn->send_response(r);
+                        return;
+                    }
 
                     // The relying party asked for a fresher sign-in than this
                     // session can offer. Sending it to the login page is what

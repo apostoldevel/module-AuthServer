@@ -665,6 +665,8 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
 
     const bool is_service = (grant_type == "client_credentials");
 
+    // quiet: the statement carries daemon.token's arguments — the end user's
+    // password on grant_type=password, a client secret on client_credentials.
     pool_.execute(std::move(sql),
         // on_result
         [conn, hostname, is_service](std::vector<PgResult> results) {
@@ -726,7 +728,8 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
             reply_oauth2_error(r, HttpStatus::internal_server_error,
                                "server_error", error);
             conn->send_response(r);
-        });
+        },
+        /*quiet=*/true);
 }
 
 // ─── session_from_request ───────────────────────────────────────────────────
@@ -1011,6 +1014,7 @@ void AuthServer::issue_authorization_code(const HttpRequest& req, HttpResponse& 
     auto target = redirect_uri;
     auto req_state = state;
 
+    // quiet: the statement carries the user's session code.
     pool_.execute(std::move(sql),
         // on_result
         [conn, target, login, consent_page, err_uri, req_state](std::vector<PgResult> results) {
@@ -1094,7 +1098,8 @@ void AuthServer::issue_authorization_code(const HttpRequest& req, HttpResponse& 
             HttpResponse r;
             redirect_error(r, err_uri, 500, "server_error", error);
             conn->send_response(r);
-        });
+        },
+        /*quiet=*/true);
 }
 
 // ─── do_identifier ──────────────────────────────────────────────────────────
@@ -1223,8 +1228,9 @@ void AuthServer::do_identifier(const HttpRequest& req, HttpResponse& resp)
     resp.set_deferred(true);
     auto conn = std::static_pointer_cast<HttpConnection>(req.connection_ctx);
 
-    // quiet: the statement carries a bearer token — the caller's or the module's —
-    // and PgPool logs statement text at debug, which this application always has on.
+    // quiet: the statement carries a bearer token — the caller's or the module's.
+    // PgPool logs statement text, and a dedicated postgres.log keeps it at debug
+    // by design; a token has no business being in either.
     pool_.execute(std::move(sql),
         // on_result
         [this, conn, anonymous](std::vector<PgResult> results) {
@@ -1345,6 +1351,7 @@ void AuthServer::login(std::shared_ptr<HttpConnection> conn,
                                pq_quote_literal(host),
                                pq_quote_literal(origin));
 
+        // quiet: the statement carries the provider's JWT.
         pool_.execute(std::move(sql),
             // on_result
             [this, conn, redir, redir_error, hostname](std::vector<PgResult> results) {
@@ -1421,7 +1428,8 @@ void AuthServer::login(std::shared_ptr<HttpConnection> conn,
                                "Temporarily unavailable.");
                 conn->send_response(r);
                 (void)error;
-            });
+            },
+            /*quiet=*/true);
 
     } catch (const std::exception& e) {
         HttpResponse r;

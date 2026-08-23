@@ -1590,29 +1590,30 @@ void AuthServer::login(std::shared_ptr<HttpConnection> conn,
                     auto payload = nlohmann::json::parse(body);
 
                     // Check for error
-                    std::string error_message;
-                    int error_code = check_pg_error(body, error_message);
+                    std::string error_message, error_id;
+                    int error_code = check_pg_error(body, error_message, error_id);
                     if (error_code != 0) {
                         auto status = error_code_to_status(error_code);
                         switch (status) {
                         case HttpStatus::unauthorized:
-                            // access_denied, not unauthorized_client. RFC 6749
-                            // §4.1.2.1 gives unauthorized_client one meaning — this
-                            // client may not request an authorization code — and a
-                            // 401 here is almost never that: it is an expired token,
-                            // a locked account, an expired password. Saying the
-                            // client is at fault sends the caller to fix the wrong
-                            // thing.
+                            // Not unauthorized_client, which RFC 6749 §4.1.2.1 gives
+                            // one meaning — this client may not request an
+                            // authorization code — and which a 401 here almost never
+                            // is. It is a token, or an account: and those want
+                            // opposite things from the caller. A bad token is worth
+                            // refreshing; a locked account is not, and telling a
+                            // client to refresh against one earns a retry loop.
                             //
-                            // The precise answer would be invalid_token for an
-                            // expired token and something else for a locked account,
-                            // and that cannot be told apart here: daemon.* returns
-                            // {code, message} and no error identifier, so 401-008
-                            // and 401-005 arrive indistinguishable. Carrying the
-                            // identifier through is a change to the daemon error
-                            // contract across every project, not something to slip
-                            // in here.
-                            redirect_error(r, redir_error, 401, "access_denied", error_message);
+                            // ERR-401-008 is TokenExpired. Everything else in that
+                            // group is about the user — wrong password, locked,
+                            // expired password, temporarily locked — where
+                            // access_denied is the honest answer.
+                            if (error_id == "ERR-401-008")
+                                redirect_error(r, redir_error, 401, "invalid_token",
+                                               error_message);
+                            else
+                                redirect_error(r, redir_error, 401, "access_denied",
+                                               error_message);
                             break;
                         case HttpStatus::forbidden:
                             redirect_error(r, redir_error, 403, "access_denied", error_message);

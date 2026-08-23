@@ -1011,6 +1011,7 @@ void AuthServer::issue_authorization_code(const HttpRequest& req, HttpResponse& 
     auto conn = std::static_pointer_cast<HttpConnection>(req.connection_ctx);
 
     // Everything the callback needs, by value — the request is gone by then.
+    auto* self = this;
     auto login = redirect_login;
     auto consent_page = redirect_consent;
     auto err_uri = redirect_error_uri;
@@ -1020,13 +1021,20 @@ void AuthServer::issue_authorization_code(const HttpRequest& req, HttpResponse& 
     // quiet: the statement carries the user's session code.
     pool_.execute(std::move(sql),
         // on_result
-        [conn, target, login, consent_page, err_uri, req_state](std::vector<PgResult> results) {
+        [self, conn, target, login, consent_page, err_uri, req_state](std::vector<PgResult> results) {
             HttpResponse r;
 
             if (results.empty() || !results[0].ok()) {
-                auto msg = results.empty() ? "no results"
-                                           : results[0].error_message();
-                redirect_error(r, err_uri, 500, "server_error", msg);
+                // The server's own text does not go into the redirect. It ends up in
+                // the address bar, the Referer of whatever the page loads next, and
+                // the browser history — and a PostgreSQL message names schemas,
+                // functions and sometimes values. The log is where it belongs.
+                if (self)
+                    self->log_.error("[AuthServer] authorization_code: {}",
+                                     results.empty() ? "no results"
+                                                     : results[0].error_message());
+                redirect_error(r, err_uri, 500, "server_error",
+                               "The authorization server could not complete the request.");
                 conn->send_response(r);
                 return;
             }
@@ -1091,15 +1099,22 @@ void AuthServer::issue_authorization_code(const HttpRequest& req, HttpResponse& 
                 redirect(r, location);
 
             } catch (const std::exception& e) {
-                redirect_error(r, err_uri, 500, "server_error", e.what());
+                if (self)
+                    self->log_.error("[AuthServer] authorization_code: unparsable "
+                                     "result: {}", e.what());
+                redirect_error(r, err_uri, 500, "server_error",
+                               "The authorization server could not complete the request.");
             }
 
             conn->send_response(r);
         },
         // on_exception
-        [conn, err_uri](std::string_view error) {
+        [self, conn, err_uri](std::string_view error) {
             HttpResponse r;
-            redirect_error(r, err_uri, 500, "server_error", error);
+            if (self)
+                self->log_.error("[AuthServer] authorization_code: {}", error);
+            redirect_error(r, err_uri, 500, "server_error",
+                           "The authorization server could not complete the request.");
             conn->send_response(r);
         },
         /*quiet=*/true);

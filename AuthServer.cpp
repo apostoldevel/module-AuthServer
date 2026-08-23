@@ -6,6 +6,7 @@
 #include "apostol/http_utils.hpp"
 #include "apostol/jwt.hpp"
 #include "apostol/logger.hpp"
+#include "apostol/db_platform.hpp"
 #include "apostol/pg_utils.hpp"
 
 #include <fmt/format.h>
@@ -103,129 +104,37 @@ void AuthServer::on_stop()
 {
     // Every client_credentials grant writes a row to db.session and nothing
     // collects them; leaving without this leaks one per worker per restart.
-    const auto& session = service_token_.session();
-    if (session.empty())
-        return;
-
-    pool_.execute(fmt::format("SELECT * FROM api.signout({})",
-                              pq_quote_literal(session)),
-                  [](std::vector<PgResult>) {},
-                  [](std::string_view) {},
-                  /*quiet=*/true);
-
+    db_platform::sign_out(pool_, service_token_.session());
     service_token_.invalidate();
 }
 
 // ─── refresh_service_token ──────────────────────────────────────────────────
 //
-// The db-platform half of ServiceToken: how a token is actually obtained.
+// Which credentials to use; db_platform::refresh_service_token issues the request.
 
 void AuthServer::refresh_service_token()
 {
-    if (!service_token_.needs_refresh())
-        return;
-
-    // Read the credentials now rather than at construction: providers are loaded
-    // by the application, and a value cached once at start-up is a value that can
-    // be cached before it exists.
+    // Read the credentials now rather than at construction: providers are loaded by
+    // the application, and a value cached once at start-up is a value that can be
+    // cached before it exists.
     const auto* svc = providers_.find_default(SVC_APP);
 
-    if (!svc || svc->client_id.empty() || svc->client_secret.empty()) {
-        log_.error("[AuthServer] no \"{}\" client with a secret in conf/oauth2: "
-                   "/oauth2/identifier will refuse unauthenticated callers", SVC_APP);
-        service_token_.failed();
+    if (!svc) {
+        // Only worth saying when something is due, or it repeats every beat.
+        if (service_token_.needs_refresh()) {
+            log_.error("[AuthServer] no \"{}\" client in conf/oauth2: /oauth2/identifier "
+                       "will refuse unauthenticated callers", SVC_APP);
+            service_token_.failed();
+        }
         return;
     }
 
-    service_token_.begin_refresh();
-
-    nlohmann::json payload{{"grant_type", "client_credentials"}};
-
     // The scope is named rather than left to the server's default. They resolve to
     // the same set today, but a token's scope decides what it may reach.
-    if (auto scope = join_strings(svc->scopes, " "); !scope.empty())
-        payload["scope"] = scope;
-
-    auto client_id = svc->client_id;
-
-    auto sql = fmt::format(
-        "SELECT * FROM daemon.token({}, {}, {}::jsonb, {}, {})",
-        pq_quote_literal(client_id),
-        pq_quote_literal(svc->client_secret),
-        pq_quote_literal(payload.dump()),
-        pq_quote_literal(kUserAgent),
-        pq_quote_literal(kServiceHost));
-
-    // quiet: the statement carries client_secret, and PgPool logs statements.
-    pool_.execute(sql,
-        [this, client_id](std::vector<PgResult> results) {
-            if (results.empty() || !results[0].ok()
-                || results[0].rows() == 0 || results[0].columns() == 0) {
-                log_.error("[AuthServer] service token for \"{}\": no result from "
-                           "daemon.token", client_id);
-                service_token_.failed();
-                return;
-            }
-
-            const char* val = results[0].value(0, 0);
-            if (!val || val[0] == '\0') {
-                log_.error("[AuthServer] service token for \"{}\": empty result",
-                           client_id);
-                service_token_.failed();
-                return;
-            }
-
-            nlohmann::json j;
-            try {
-                j = nlohmann::json::parse(val);
-            } catch (const std::exception& e) {
-                log_.error("[AuthServer] service token for \"{}\": unparsable "
-                           "result: {}", client_id, e.what());
-                service_token_.failed();
-                return;
-            }
-
-            // daemon.token reports refusals in the body, not as a failed query.
-            if (j.contains("error")) {
-                const auto& e = j["error"];
-                log_.error("[AuthServer] service token for \"{}\" refused: {} {}",
-                           client_id,
-                           e.is_object() ? e.value("error", "error") : std::string("error"),
-                           e.is_object() ? e.value("message", "") : std::string());
-                service_token_.failed();
-                return;
-            }
-
-            auto token   = j.value("access_token", "");
-            auto session = j.value("session", "");
-
-            std::chrono::seconds life{3600};
-            if (j.contains("expires_in") && j["expires_in"].is_number())
-                life = std::chrono::seconds(static_cast<long long>(j["expires_in"].get<double>()));
-
-            service_token_.issued(std::move(token), std::move(session), life);
-
-            if (!service_token_.valid()) {
-                log_.error("[AuthServer] service token for \"{}\": response carried "
-                           "no usable token", client_id);
-                return;
-            }
-
-            // The session behind the token just replaced — closed only now, because
-            // closing it earlier would revoke the token still serving requests.
-            if (auto previous = service_token_.take_previous_session(); !previous.empty()) {
-                pool_.execute(fmt::format("SELECT * FROM api.signout({})",
-                                          pq_quote_literal(previous)),
-                              [](std::vector<PgResult>) {},
-                              [](std::string_view) {},
-                              /*quiet=*/true);
-            }
-        },
-        [this, client_id](std::string_view error) {
-            log_.error("[AuthServer] service token for \"{}\": {}", client_id, error);
-            service_token_.failed();
-        },
-        /*quiet=*/true);
+    db_platform::refresh_service_token(pool_, service_token_, log_, "[AuthServer]",
+                                       svc->client_id, svc->client_secret,
+                                       join_strings(svc->scopes, " "),
+                                       kUserAgent, kServiceHost);
 }
 
 void AuthServer::heartbeat(std::chrono::system_clock::time_point now)

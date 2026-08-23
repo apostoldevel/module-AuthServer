@@ -104,7 +104,10 @@ void AuthServer::on_stop()
 {
     // Every client_credentials grant writes a row to db.session and nothing
     // collects them; leaving without this leaks one per worker per restart.
-    db_platform::sign_out(pool_, service_token_.session(), &log_, "[AuthServer]");
+    // By token, not by session code. This pool's role is daemon, which reaches the
+    // daemon schema and not api — closing by code answers "permission denied for
+    // schema api", which is why these sessions used to survive every restart.
+    db_platform::close_session(pool_, service_token_.token(), &log_, "[AuthServer]");
     service_token_.invalidate();
 }
 

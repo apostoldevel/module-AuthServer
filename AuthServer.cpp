@@ -104,7 +104,7 @@ void AuthServer::on_stop()
 {
     // Every client_credentials grant writes a row to db.session and nothing
     // collects them; leaving without this leaks one per worker per restart.
-    db_platform::sign_out(pool_, service_token_.session());
+    db_platform::sign_out(pool_, service_token_.session(), &log_, "[AuthServer]");
     service_token_.invalidate();
 }
 

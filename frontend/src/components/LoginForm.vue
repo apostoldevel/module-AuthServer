@@ -35,9 +35,11 @@
       {{ loading ? t('common.loading') : t('login.submit') }}
     </button>
 
-    <div class="divider">{{ t('common.or') }}</div>
+    <template v-if="config.googleClientId">
+      <div class="divider">{{ t('common.or') }}</div>
 
-    <GoogleButton :loading="loading" />
+      <GoogleButton :loading="loading" />
+    </template>
 
     <div class="auth-footer">
       <router-link to="/recover">{{ t('login.forgot') }}</router-link>
@@ -55,6 +57,7 @@ import { ref, reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuth } from '@/composables/useAuth'
+import { config } from '@/config'
 import GoogleButton from './GoogleButton.vue'
 
 const { t } = useI18n()

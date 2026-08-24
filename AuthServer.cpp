@@ -57,7 +57,13 @@ static constexpr const char* kCookieAT  = "__Secure-AT";
 static constexpr const char* kCookieRT  = "__Secure-RT";
 static constexpr const char* kCookieSAT = "__Secure-SAT";
 static constexpr const char* kCookieSRT = "__Secure-SRT";
-static constexpr const char* kCookieSID = "SID";
+
+// The session code itself. Unlike the tokens it carries no signature: whatever
+// arrives under this name is taken as the caller's identity, so the __Host- prefix
+// is load-bearing here too. It forbids a Domain attribute, which means a sibling
+// subdomain — one that answers over http, or one whose https was taken — cannot
+// plant a session for this host.
+static constexpr const char* kCookieSID = "__Host-SID";
 
 // Double-submit token for POST /oauth2/consent. Written by the consent screen and
 // echoed back in the form body; see do_consent for why it exists and why Origin
@@ -277,6 +283,8 @@ void AuthServer::set_secure_cookies(HttpResponse& resp,
         resp.set_cookie(kCookieRT, refresh_token, "/", kCookieMaxAge,
                         true, "None", true, domain);
 
+    // Never with a domain, even when the tokens above take one: __Host- forbids the
+    // attribute outright, and a browser drops the whole cookie if it appears.
     if (!session.empty())
         resp.set_cookie(kCookieSID, session, "/", kCookieMaxAge,
                         true, "Lax", true);
@@ -871,7 +879,17 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
 
 std::string AuthServer::session_from_request(const HttpRequest& req) const
 {
-    // SID carries the session code itself.
+    // __Host-SID carries the session code itself. Only the prefixed name is read:
+    // keeping the old bare "SID" for compatibility would hand the injection route
+    // straight back, because this value is trusted without a signature and is read
+    // ahead of the token below.
+    //
+    // A browser still holding the old cookie falls through to __Secure-AT and stays
+    // signed in until that expires — but only over https, since __Secure-AT needs the
+    // same secure origin this cookie now does. That softness is not a property of the
+    // rename; it belongs to the cookie scheme as a whole, which a deployment without
+    // TLS cannot use at all. Such a deployment authenticates by Authorization: Bearer
+    // or the Session+Secret pair, and neither passes through here.
     auto sid = req.cookie(kCookieSID);
     if (!sid.empty())
         return sid;

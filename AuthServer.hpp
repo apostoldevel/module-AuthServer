@@ -117,7 +117,7 @@ private:
     void refresh_service_token();
 
     /// Session code of the signed-in user, or empty if there is none.
-    /// Reads the SID cookie; falls back to the "sub" claim of __Secure-AT.
+    /// Reads the __Host-SID cookie; falls back to the "sub" claim of __Secure-AT.
     std::string session_from_request(const HttpRequest& req) const;
 
     // ── OAuth2 error responses (RFC 6749 format) ─────────────────────────────

@@ -52,10 +52,6 @@
     "allow": "Povolit",
     "deny": "Zamítnout"
   },
-  "debug": {
-    "success": "Autorizace proběhla úspěšně.",
-    "noData": "Nebyla přijata žádná autorizační data."
-  },
   "error": {
     "title": "Chyba",
     "generic": "Došlo k chybě.",

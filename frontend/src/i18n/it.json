@@ -52,10 +52,6 @@
     "allow": "Consenti",
     "deny": "Nega"
   },
-  "debug": {
-    "success": "Autorizzazione riuscita.",
-    "noData": "Nessun dato di autorizzazione ricevuto."
-  },
   "error": {
     "title": "Errore",
     "generic": "Si è verificato un errore.",

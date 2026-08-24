@@ -52,10 +52,6 @@
     "allow": "Allow",
     "deny": "Deny"
   },
-  "debug": {
-    "success": "Authorization successful.",
-    "noData": "No authorization data received."
-  },
   "error": {
     "title": "Error",
     "generic": "An error occurred.",

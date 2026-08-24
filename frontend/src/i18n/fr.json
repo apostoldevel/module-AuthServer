@@ -52,10 +52,6 @@
     "allow": "Autoriser",
     "deny": "Refuser"
   },
-  "debug": {
-    "success": "Autorisation réussie.",
-    "noData": "Aucune donnée d'autorisation reçue."
-  },
   "error": {
     "title": "Erreur",
     "generic": "Une erreur est survenue.",

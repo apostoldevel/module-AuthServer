@@ -11,7 +11,7 @@
     "email": "Correo electrónico o nombre de usuario",
     "password": "Contraseña",
     "submit": "Iniciar sesión",
-    "google": "Iniciar sesión con Google",
+    "withProvider": "Iniciar sesión con {name}",
     "noAccount": "¿No tienes cuenta?",
     "register": "Crear cuenta",
     "forgot": "¿Olvidaste tu contraseña?",

@@ -11,7 +11,7 @@
     "email": "E-mail ou nom d'utilisateur",
     "password": "Mot de passe",
     "submit": "Se connecter",
-    "google": "Se connecter avec Google",
+    "withProvider": "Se connecter avec {name}",
     "noAccount": "Pas encore de compte ?",
     "register": "Créer un compte",
     "forgot": "Mot de passe oublié ?",

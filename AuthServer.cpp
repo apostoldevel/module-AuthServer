@@ -70,6 +70,16 @@ static constexpr const char* kCookieSID = "__Host-SID";
 // does not. The __Host- prefix is load-bearing: it forbids a Domain attribute, so
 // only this exact host can set the cookie — a sibling subdomain cannot plant one.
 static constexpr const char* kCookieConsentToken = "__Host-CT";
+
+// CSRF state for the external sign-in (RFC 6749 §10.12). The login screen mints it,
+// keeps it in this cookie, and passes the same value to the provider as ?state=; on
+// return, do_get compares the two. Same double-submit as the consent token, and the
+// __Host- prefix carries the same weight — but SameSite=Lax, not Strict: the return
+// is a top-level navigation from the provider's origin, which a Strict cookie would
+// not accompany. The login screen sets it (a browser lets script set a __Host-
+// cookie as long as it is Secure and Path=/), so nothing here writes it.
+static constexpr const char* kCookieOAuthState = "__Host-OAuthState";
+
 static constexpr int kCookieMaxAge      = 60 * 86400; // 60 days
 
 // ─── Construction ────────────────────────────────────────────────────────────
@@ -337,7 +347,6 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
     const std::string redirect_consent    = site ? site->oauth2.consent    : "";
     const std::string redirect_callback   = site ? site->oauth2.callback   : "";
     const std::string redirect_err        = site ? site->oauth2.error      : "";
-    const std::string redirect_debug      = site ? site->oauth2.debug      : "";
 
     static const std::vector<std::string> kResponseTypes{"code", "token"};
     static const std::vector<std::string> kAccessTypes{"online", "offline"};
@@ -622,6 +631,34 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
         if (provider_name.empty())
             provider_name = "default";
 
+        // CSRF for the external sign-in (RFC 6749 §10.12). Every hit of this endpoint
+        // is a provider sending the browser back, and until now state was read only
+        // to choose a redirect — never checked, so an attacker's authorization code
+        // could be planted on a victim's browser and signed in as the attacker. The
+        // state that returns must equal the one the login screen minted and kept in a
+        // __Host- cookie before it sent the browser off. This is the consent token's
+        // double-submit, and it holds for the same reason: an attacker on another
+        // origin can neither read our cookie to forge a matching state nor plant one
+        // under the __Host- prefix. The cookie is SameSite=Lax, not Strict, because
+        // this return is a top-level navigation from the provider's origin — a Strict
+        // cookie would not be sent and every real sign-in would fail the check.
+        //
+        // No "debug" bypass: state was previously compared to the literal "debug" to
+        // route to a dev page, which under a real check would be a hole straight
+        // through it. That routing is gone; the check is unconditional.
+        const auto state_cookie = req.cookie(kCookieOAuthState);
+        if (state.empty() || state_cookie.empty() || state != state_cookie) {
+            if (state.empty() || state_cookie.empty())
+                log_.warn("[AuthServer] oauth2 code refused: state {} missing (provider={})",
+                          state_cookie.empty() ? "cookie" : "parameter", provider_name);
+            else
+                log_.warn("[AuthServer] oauth2 code refused: state mismatch (provider={})",
+                          provider_name);
+            redirect_error(resp, redirect_err, 403, "access_denied",
+                           "The sign-in did not originate from this site.");
+            return;
+        }
+
         auto* app = providers_.find(provider_name, WEB_APP);
         if (!app) {
             redirect_error(resp, redirect_err, 400, "invalid_request",
@@ -632,7 +669,7 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
         auto conn = std::static_pointer_cast<HttpConnection>(req.connection_ctx);
         resp.set_deferred(true);
 
-        auto redir = (state == "debug") ? redirect_debug : redirect_callback;
+        auto redir = redirect_callback;
         auto agent = get_user_agent(req, "AuthServer/2.0");
         auto real_ip = get_real_ip(req);
         auto full_origin = get_protocol(req) + "://" + host;
@@ -649,11 +686,66 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
         do_identifier(req, resp);
         return;
 
+    } else if (action == "providers") {
+
+        do_providers(req, resp);
+        return;
+
     } else {
         resp.set_status(HttpStatus::not_found)
             .set_body("", "text/plain");
         return;
     }
+}
+
+// ─── do_providers ─────────────────────────────────────────────────────────────
+//
+// The list an unauthenticated login screen fetches to render its "sign in through
+// X" buttons. Two things make the projection here load-bearing rather than a
+// formality:
+//
+//   1. There is no session yet — the screen calls this *before* anyone has signed
+//      in — so nothing but this code decides what leaves the server. And the same
+//      OAuthApp that feeds it holds client_secret. The answer is therefore built
+//      field by field from a fixed set; the whole object is never serialised. Adding
+//      a field to OAuthApp must not add it here by accident, which is why this does
+//      not iterate keys.
+//
+//   2. Only providers that declare `external` appear. `default` and `bridge` are
+//      this installation's own applications — their auth_uri points back at us, and
+//      "sign in through ourselves" is not a button. Listing them would also put our
+//      own web client_id on an anonymous endpoint for no reason.
+//
+// Only the `web` section is considered: the external path takes that section by a
+// constant everywhere (see validate flow), so a provider is reachable through
+// exactly one application, and the list must agree with it.
+void AuthServer::do_providers(const HttpRequest& req, HttpResponse& resp)
+{
+    (void) req;
+
+    nlohmann::json list = nlohmann::json::array();
+
+    for (const auto& app : providers_.apps()) {
+        if (!app.external || app.name != WEB_APP)
+            continue;
+
+        // Explicit projection. Everything here is public: it ends up in the browser's
+        // address bar the moment the user starts the flow. client_secret, issuers,
+        // algorithm, userinfo_*, redirect/origin lists and our own scope codes are
+        // none of the screen's business and are not copied.
+        nlohmann::json item;
+        item["provider"]     = app.provider;      // path segment: /oauth2/code/<provider>
+        item["display_name"] = app.display_name;
+        item["icon"]         = app.icon;
+        item["client_id"]    = app.client_id;     // public; the redirect carries it anyway
+        item["auth_uri"]     = app.auth_uri;      // the provider's authorize endpoint
+        item["login_scope"]  = app.login_scope;   // the provider's OAuth scope string
+
+        list.push_back(std::move(item));
+    }
+
+    resp.set_status(HttpStatus::ok)
+        .set_body(list.dump(), "application/json");
 }
 
 // ─── do_post ────────────────────────────────────────────────────────────────

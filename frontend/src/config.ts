@@ -4,5 +4,4 @@ export const config = {
   scope: import.meta.env.VITE_SCOPE || '',
   appTitle: import.meta.env.VITE_APP_TITLE || 'Apostol',
   appLogo: import.meta.env.VITE_APP_LOGO || '/assets/logo.svg',
-  googleClientId: import.meta.env.VITE_GOOGLE_CLIENT_ID || '',
 } as const

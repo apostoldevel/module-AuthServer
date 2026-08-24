@@ -68,6 +68,13 @@ private:
     void do_token(const HttpRequest& req, HttpResponse& resp);
     void do_identifier(const HttpRequest& req, HttpResponse& resp);
 
+    /// GET /oauth2/providers — the external sign-in providers the login screen offers.
+    /// Unauthenticated (the screen calls it before anyone signs in), so it returns a
+    /// strict field-by-field projection, never a serialised OAuthApp: that struct
+    /// carries client_secret. Only providers with `external` set are listed —
+    /// `default` and `bridge` are our own applications, not sign-in options.
+    void do_providers(const HttpRequest& req, HttpResponse& resp);
+
     /// POST /oauth2/consent — the answer to the consent screen. Records the user's
     /// consent for this client, then issues the code and redirects, exactly as the
     /// authorize endpoint would have done had the consent already stood.

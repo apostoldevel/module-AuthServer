@@ -11,7 +11,7 @@
     "email": "Email or Username",
     "password": "Password",
     "submit": "Sign In",
-    "google": "Sign in with Google",
+    "withProvider": "Sign in with {name}",
     "noAccount": "Don't have an account?",
     "register": "Create account",
     "forgot": "Forgot password?",

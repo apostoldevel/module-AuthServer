@@ -11,7 +11,7 @@
     "email": "Email или имя пользователя",
     "password": "Пароль",
     "submit": "Войти",
-    "google": "Войти через Google",
+    "withProvider": "Войти через {name}",
     "noAccount": "Нет аккаунта?",
     "register": "Зарегистрироваться",
     "forgot": "Забыли пароль?",

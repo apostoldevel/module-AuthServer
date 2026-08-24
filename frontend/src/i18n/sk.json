@@ -11,7 +11,7 @@
     "email": "E-mail alebo používateľské meno",
     "password": "Heslo",
     "submit": "Prihlásiť sa",
-    "google": "Prihlásiť sa cez Google",
+    "withProvider": "Prihlásiť sa cez {name}",
     "noAccount": "Nemáte účet?",
     "register": "Vytvoriť účet",
     "forgot": "Zabudli ste heslo?",

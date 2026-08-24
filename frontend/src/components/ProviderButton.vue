@@ -31,7 +31,12 @@ function mintState(): string {
           .map((b) => b.toString(16).padStart(2, '0'))
           .join('')
 
-  document.cookie = `__Host-OAuthState=${state}; Path=/; Secure; SameSite=Lax; Max-Age=600`
+  // 30 minutes, not the consent token's 10: a first sign-in through a provider can
+  // include registering an account on the provider's side, and the state must still
+  // be here when the user finally returns. The window is a CSRF-token lifetime, not a
+  // session — and a captured code+state is backstopped by single-use codes and cleared
+  // server-side on success (AuthServer, do_get "code" branch).
+  document.cookie = `__Host-OAuthState=${state}; Path=/; Secure; SameSite=Lax; Max-Age=1800`
   return state
 }
 

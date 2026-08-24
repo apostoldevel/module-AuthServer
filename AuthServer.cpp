@@ -610,42 +610,31 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
 
     } else if (action == "code") {
 
-        const auto& code  = req.param("code");
-        const auto& error = req.param("error");
-
-        // Check for provider error first (e.g. Google returns ?error=...&error_description=...)
-        if (!error.empty()) {
-            redirect_error(resp, redirect_err, 400, error,
-                           req.param("error_description"));
-            return;
-        }
-
-        if (code.empty()) {
-            redirect_error(resp, redirect_err, 400, "invalid_request",
-                           "Parameter \"code\" not found.");
-            return;
-        }
-
         const auto& state = req.param("state");
         auto provider_name = extract_provider(req.path);
         if (provider_name.empty())
             provider_name = "default";
 
-        // CSRF for the external sign-in (RFC 6749 §10.12). Every hit of this endpoint
-        // is a provider sending the browser back, and until now state was read only
-        // to choose a redirect — never checked, so an attacker's authorization code
-        // could be planted on a victim's browser and signed in as the attacker. The
-        // state that returns must equal the one the login screen minted and kept in a
-        // __Host- cookie before it sent the browser off. This is the consent token's
-        // double-submit, and it holds for the same reason: an attacker on another
-        // origin can neither read our cookie to forge a matching state nor plant one
-        // under the __Host- prefix. The cookie is SameSite=Lax, not Strict, because
-        // this return is a top-level navigation from the provider's origin — a Strict
-        // cookie would not be sent and every real sign-in would fail the check.
+        // CSRF for the external sign-in (RFC 6749 §10.12), and it is the very first
+        // thing done here — before the error and code parameters are even read.
+        // Every hit of this endpoint is a provider sending the browser back, and a
+        // provider echoes state on the error return as much as on the success one
+        // (RFC 6749 §4.1.2.1). Checking success only would leave the error branch
+        // open: error and error_description are attacker-chosen text, and rendering
+        // them on our own error page, under our own certificate, for anyone who
+        // crafts the URL, is a phishing surface — no session is handed out, but
+        // "your session expired, call this number" appears on auth.<domain>. So the
+        // gate comes first and the check is unconditional.
         //
-        // No "debug" bypass: state was previously compared to the literal "debug" to
-        // route to a dev page, which under a real check would be a hole straight
-        // through it. That routing is gone; the check is unconditional.
+        // The state that returns must equal the one the login screen minted and kept
+        // in a __Host- cookie before it sent the browser off. This is the consent
+        // token's double-submit, and it holds for the same reason: an attacker on
+        // another origin can neither read our cookie to forge a matching state nor
+        // plant one under the __Host- prefix. The cookie is SameSite=Lax, not Strict,
+        // because this return is a top-level navigation from the provider's origin —
+        // a Strict cookie would not be sent and every real sign-in would fail. (The
+        // old "debug" routing that compared state to a literal is gone with it: under
+        // a real check that literal was a hole straight through.)
         const auto state_cookie = req.cookie(kCookieOAuthState);
         if (state.empty() || state_cookie.empty() || state != state_cookie) {
             if (state.empty() || state_cookie.empty())
@@ -654,8 +643,27 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
             else
                 log_.warn("[AuthServer] oauth2 code refused: state mismatch (provider={})",
                           provider_name);
+            // Actionable for the one legitimate way to reach it — a state cookie that
+            // expired while the user registered at the provider — without helping the
+            // other: it names nothing an attacker did not already send.
             redirect_error(resp, redirect_err, 403, "access_denied",
-                           "The sign-in did not originate from this site.");
+                           "The sign-in could not be verified. Please start again.");
+            return;
+        }
+
+        // Only now, past the gate: a provider error the browser carried back (the
+        // provider echoed our state, so this is a real return), then the code.
+        const auto& error = req.param("error");
+        if (!error.empty()) {
+            redirect_error(resp, redirect_err, 400, error,
+                           req.param("error_description"));
+            return;
+        }
+
+        const auto& code = req.param("code");
+        if (code.empty()) {
+            redirect_error(resp, redirect_err, 400, "invalid_request",
+                           "Parameter \"code\" not found.");
             return;
         }
 
@@ -1762,6 +1770,11 @@ void AuthServer::login(std::shared_ptr<HttpConnection> conn,
                     auto state         = json_string(payload, "state");
 
                     set_secure_cookies(r, access_token, refresh_token, session, "");
+                    // The state cookie has done its job the moment the return was verified;
+                    // clear it on the way out so a captured code+state cannot be replayed
+                    // inside its 10-minute window. Single-use codes already backstop this
+                    // (a replay answers invalid_grant); this is the cheaper outer layer.
+                    r.set_cookie(kCookieOAuthState, "", "/", -1, true, "Lax", true);
 
                     // Build redirect with token info in fragment
                     auto redirect_url = redir + "#access_token=" + access_token;
@@ -1880,6 +1893,11 @@ void AuthServer::fetch_access_token(std::shared_ptr<HttpConnection> conn,
                         auto state         = json_string(json, "state");
 
                         set_secure_cookies(r, access_token, refresh_token, session, "");
+                        // The state cookie has done its job the moment the return was verified;
+                        // clear it on the way out so a captured code+state cannot be replayed
+                        // inside its 10-minute window. Single-use codes already backstop this
+                        // (a replay answers invalid_grant); this is the cheaper outer layer.
+                        r.set_cookie(kCookieOAuthState, "", "/", -1, true, "Lax", true);
 
                         auto redirect_url = redir + "#access_token=" + access_token;
                         if (!refresh_token.empty())

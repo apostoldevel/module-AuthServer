@@ -53,6 +53,30 @@ static constexpr const char* SVC_APP   = "service";
 static constexpr auto kHeartbeatInterval = std::chrono::minutes(30);
 static constexpr auto kRetryInterval     = std::chrono::seconds(5);
 
+// T063. Two independent limits on the outbound-provider login path.
+//   2a — a per-request ceiling on the outbound HTTP call itself. Without it a
+//        provider that accepts the connection and then never answers hangs the
+//        sign-in with no bound at all; curl reports the timeout as on_error,
+//        which already redirects to a login refusal.
+//   2b — a backstop on the whole deferred response. It fires only if NO callback
+//        arrives — for any reason, including ones CURLOPT_TIMEOUT cannot catch
+//        (a transfer that never started, a framework bug) — and closes the
+//        response as a refusal instead of leaving it for nginx to cut as a 504.
+// The safety window is wider than two per-request budgets so a slow-but-working
+// exchange (token → userinfo), or its own timeout turning into an on_error
+// refusal, always resolves first. Both stay below nginx's proxy_read_timeout so
+// the caller sees "sign-in failed", never a gateway error.
+//
+// This last ordering — 30 < 65 < proxy_read_timeout — is a coupling across two
+// repositories with nothing to enforce it. nginx currently sets 90
+// (.docker/nginx-certbot/default.conf.template, proxy_read_timeout, carries the
+// mirror of this note). Drop it to 60 — nginx's own default — and the 65s safety
+// timer becomes unreachable: the gateway answers first, the "did not complete in
+// time" message never appears, and the failure reverts to the traceless 504 that
+// T058 cost half a day. Keep proxy_read_timeout above kDeferredSafetyWindow.
+static constexpr long kFetchTimeoutMs      = 30000;                    // 2a
+static constexpr auto kDeferredSafetyWindow = std::chrono::seconds(65); // 2b, < nginx proxy_read_timeout (90)
+
 static constexpr const char* kCookieAT  = "__Secure-AT";
 static constexpr const char* kCookieRT  = "__Secure-RT";
 static constexpr const char* kCookieSAT = "__Secure-SAT";
@@ -87,12 +111,17 @@ static constexpr int kCookieMaxAge      = 60 * 86400; // 60 days
 AuthServer::AuthServer(Application& app)
     : pool_(app.db_pool())
     , fetch_(app.worker_loop())
+    , loop_(app.worker_loop())
     , log_(app.logger())
     , providers_(app.providers())
     , sites_(app.sites())
     , enabled_(true)
     , next_heartbeat_(std::chrono::system_clock::now())
 {
+    // 2a — bound every outbound call (token exchange, userinfo). Default is 0,
+    // i.e. no timeout, so a provider that stops responding would hang the sign-in
+    // indefinitely. See kFetchTimeoutMs.
+    fetch_.set_timeout(kFetchTimeoutMs);
     load_allowed_origins(providers_);
 }
 
@@ -1841,6 +1870,34 @@ void AuthServer::fetch_access_token(std::shared_ptr<HttpConnection> conn,
         url_encode(origin + "/oauth2/code/" + app.provider));
 
     auto provider_name = app.provider;
+
+    // 2b — one safety timer for the whole deferred chain (this exchange and, for a
+    // provider without an id_token, the userinfo fetch it hands off to). Every branch
+    // below answers with conn->send_response(); a deferred response carries
+    // Connection: close, so once ANY of them has answered — or the client has gone —
+    // conn->closed() is true and this timer is a no-op (has_pending_writes() guards the
+    // brief moment a real answer is mid-flush). It does something only when no callback
+    // ever arrives, and then it closes the response as a refusal rather than leaving it
+    // to time out at the gateway. Fires once; not cancelled by hand — the closed() check
+    // makes cancellation unnecessary.
+    //
+    // The closed() guarantee holds ONLY because this whole path is deferred: do_get
+    // calls set_deferred(true) immediately before fetch_access_token, and a deferred
+    // response carries Connection: close, so ANY answer here closes the connection.
+    // Arming this timer and set_deferred are one thing — do not split them. A branch
+    // that armed the timer and then answered SYNCHRONOUSLY would leave a keep-alive
+    // connection open (closed() false, no pending writes), and the timer would post its
+    // 504 into a connection that already carried a real response.
+    loop_.add_timer(kDeferredSafetyWindow,
+        [this, conn, redir_error]() {
+            if (conn->closed() || conn->has_pending_writes())
+                return;
+            HttpResponse r;
+            redirect_error(r, redir_error, 504, "server_error",
+                           "The sign-in did not complete in time. Please start again.");
+            conn->send_response(r);
+        },
+        /*repeat=*/false);
 
     fetch_.post(token_uri, post_body,
         {{"Content-Type", "application/x-www-form-urlencoded"}},

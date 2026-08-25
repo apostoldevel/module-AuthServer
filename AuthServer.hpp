@@ -208,6 +208,7 @@ private:
     // ── State ────────────────────────────────────────────────────────────────
     PgPool& pool_;
     FetchClient fetch_;
+    EventLoop& loop_;   // worker event loop — arms the deferred-response safety timer (T063)
 
     /// The module's own access token, for work a caller cannot authenticate for
     /// yet — see do_identifier. Obtained server-side with the client credentials

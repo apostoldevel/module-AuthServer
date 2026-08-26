@@ -551,8 +551,20 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
         // comparing the whole string means "prompt=secret signin" matches neither
         // branch and lands on the identifier page — the one screen the client did
         // not ask for. The same list is already read token-wise three lines above.
+        //
+        // No relative location: an empty oauth2.identifier (or oauth2.secret) would
+        // make redirect_login read as "?client_id=…", which the browser resolves
+        // against /oauth2/authorize and lands right back here — a redirect loop, worse
+        // than the finite 404 it replaced. Kept empty when there is no page to send to,
+        // and refused below rather than redirected (T065). do_consent shares this
+        // reasoning — no relative Location — and its comment points here, but the mirror
+        // is only partial: do_consent always returns to the identifier page, while this
+        // path also offers the secret page (prompt=secret). That branch has no
+        // equivalent in the consent flow, so the asymmetry is by design, not a gap.
+        const std::string login_base =
+            wants_prompt("secret") ? redirect_secret : redirect_identifier;
         const std::string redirect_login =
-            (wants_prompt("secret") ? redirect_secret : redirect_identifier) + query;
+            login_base.empty() ? std::string() : login_base + query;
 
         // What the user will be asked to agree to. An empty scope is not "nothing" —
         // the database expands it to every scope there is — so resolve it here, to
@@ -635,6 +647,16 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
             return;
         }
 
+        if (redirect_login.empty()) {
+            // Names the cause, like the consent_required refusal above: this site has
+            // no oauth2.identifier (nor secret) configured, so there is nowhere to send
+            // the user to sign in. "Not signed in" would point at the user, who is not
+            // the problem — an admin reading the client's log would hunt for a session
+            // rather than the missing configuration.
+            redirect_client_error(resp, redirect_uri, "access_denied",
+                                  "This server has no sign-in screen configured.", state);
+            return;
+        }
         redirect(resp, redirect_login);
 
     } else if (action == "code") {
@@ -716,6 +738,17 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
 
     } else if (action == "callback") {
 
+        // Same loop guard as the sign-in redirect above (T065). redirect_callback is
+        // site->oauth2.callback, empty when the site did not configure it, and an empty
+        // Location resolves relative to /oauth2/callback — the browser lands right back
+        // here. Refuse to the site error page instead; redirect_error is itself
+        // loop-safe (a JSON error when that page too is unset). The mechanical version
+        // of this guard, inside redirect() so no caller has to remember it, is T087.
+        if (redirect_callback.empty()) {
+            redirect_error(resp, redirect_err, 500, "server_error",
+                           "This server has no callback page configured.");
+            return;
+        }
         redirect(resp, redirect_callback);
 
     } else if (action == "identifier") {

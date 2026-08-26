@@ -745,6 +745,11 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
         // loop-safe (a JSON error when that page too is unset). The mechanical version
         // of this guard, inside redirect() so no caller has to remember it, is T087.
         if (redirect_callback.empty()) {
+            // redirect_error is static and cannot log; the /error screen no longer shows
+            // the prose (T050), so name the cause here — this is a deployment fault, and
+            // the log is where it has to be visible.
+            log_.warn("[AuthServer] callback refused: oauth2.callback is not configured "
+                      "for host \"{}\"", host);
             redirect_error(resp, redirect_err, 500, "server_error",
                            "This server has no callback page configured.");
             return;

@@ -55,6 +55,20 @@
   "error": {
     "title": "Error",
     "generic": "An error occurred.",
-    "backToLogin": "Back to Sign In"
+    "backToLogin": "Back to Sign In",
+    "codes": {
+      "access_denied": "This happens when the sign-in page was left open too long, or when the request did not come from it.",
+      "invalid_request": "The sign-in request is malformed.",
+      "unauthorized_client": "This application is not allowed to sign in.",
+      "unsupported_response_type": "This sign-in method is not supported.",
+      "invalid_scope": "The application asked for access it does not have.",
+      "server_error": "A server-side error occurred. If retrying does not help, contact support and quote the code.",
+      "temporarily_unavailable": "Sign-in is temporarily unavailable. Try again later.",
+      "invalid_token": "Sign-in was not confirmed: the token is invalid or expired. Please start signing in again.",
+      "invalid_client": "The application was not recognised.",
+      "unsupported_prompt_type": "An unknown sign-in mode was requested.",
+      "consent_required": "Consent is required, but no consent screen is configured.",
+      "login_required": "Sign-in is required, but no screen may be shown: the application asked to do without one."
+    }
   }
 }

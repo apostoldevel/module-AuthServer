@@ -1644,7 +1644,7 @@ void AuthServer::do_identifier(const HttpRequest& req, HttpResponse& resp)
 
 // ─── External providers ─────────────────────────────────────────────────────
 
-void AuthServer::login(std::shared_ptr<HttpConnection> conn,
+void AuthServer::login(std::shared_ptr<DeferredResponse> deferred,
                        const std::string& redir,
                        const std::string& redir_error,
                        const std::string& agent,
@@ -1668,7 +1668,7 @@ void AuthServer::login(std::shared_ptr<HttpConnection> conn,
             HttpResponse r;
             redirect_error(r, redir_error, 401, "unauthorized_client",
                            "Invalid token type.");
-            conn->send_response(r);
+            deferred->respond(r);
             return;
         }
 
@@ -1694,14 +1694,14 @@ void AuthServer::login(std::shared_ptr<HttpConnection> conn,
             HttpResponse r;
             redirect_error(r, redir_error, 401, "invalid_token",
                            "The access token has expired.");
-            conn->send_response(r);
+            deferred->respond(r);
             return;
         } catch (const JwtVerificationError& e) {
             log_.warn("[AuthServer] token verification failed: {}", e.what());
             HttpResponse r;
             redirect_error(r, redir_error, 401, "invalid_token",
                            "The access token could not be verified.");
-            conn->send_response(r);
+            deferred->respond(r);
             return;
         } catch (const std::exception& e) {
             // A token that is not a token at all: jwt-cpp's own decode throws before
@@ -1713,7 +1713,7 @@ void AuthServer::login(std::shared_ptr<HttpConnection> conn,
             HttpResponse r;
             redirect_error(r, redir_error, 401, "invalid_token",
                            "The access token is malformed.");
-            conn->send_response(r);
+            deferred->respond(r);
             return;
         }
 
@@ -1726,14 +1726,14 @@ void AuthServer::login(std::shared_ptr<HttpConnection> conn,
         // quiet: the statement carries the provider's JWT.
         pool_.execute(std::move(sql),
             // on_result
-            [this, conn, redir, redir_error, hostname](std::vector<PgResult> results) {
+            [this, deferred, redir, redir_error, hostname](std::vector<PgResult> results) {
                 HttpResponse r;
 
                 if (results.empty() || !results[0].ok()) {
                     auto msg = results.empty() ? "no results"
                                                : results[0].error_message();
                     redirect_error(r, redir_error, 500, "server_error", msg);
-                    conn->send_response(r);
+                    deferred->respond(r);
                     return;
                 }
 
@@ -1786,7 +1786,7 @@ void AuthServer::login(std::shared_ptr<HttpConnection> conn,
                             redirect_error(r, redir_error, 400, "invalid_request", error_message);
                             break;
                         }
-                        conn->send_response(r);
+                        deferred->respond(r);
                         return;
                     }
 
@@ -1821,14 +1821,14 @@ void AuthServer::login(std::shared_ptr<HttpConnection> conn,
                     redirect_error(r, redir_error, 500, "server_error", e.what());
                 }
 
-                conn->send_response(r);
+                deferred->respond(r);
             },
             // on_exception
-            [conn, redir_error](std::string_view error) {
+            [deferred, redir_error](std::string_view error) {
                 HttpResponse r;
                 redirect_error(r, redir_error, 503, "temporarily_unavailable",
                                "Temporarily unavailable.");
-                conn->send_response(r);
+                deferred->respond(r);
                 (void)error;
             },
             /*quiet=*/true);
@@ -1836,7 +1836,7 @@ void AuthServer::login(std::shared_ptr<HttpConnection> conn,
     } catch (const std::exception& e) {
         HttpResponse r;
         redirect_error(r, redir_error, 500, "server_error", e.what());
-        conn->send_response(r);
+        deferred->respond(r);
     }
 }
 
@@ -1871,38 +1871,25 @@ void AuthServer::fetch_access_token(std::shared_ptr<HttpConnection> conn,
 
     auto provider_name = app.provider;
 
-    // 2b — one safety timer for the whole deferred chain (this exchange and, for a
-    // provider without an id_token, the userinfo fetch it hands off to). Every branch
-    // below answers with conn->send_response(); a deferred response carries
-    // Connection: close, so once ANY of them has answered — or the client has gone —
-    // conn->closed() is true and this timer is a no-op (has_pending_writes() guards the
-    // brief moment a real answer is mid-flush). It does something only when no callback
-    // ever arrives, and then it closes the response as a refusal rather than leaving it
-    // to time out at the gateway. Fires once; not cancelled by hand — the closed() check
-    // makes cancellation unnecessary.
-    //
-    // The closed() guarantee holds ONLY because this whole path is deferred: do_get
-    // calls set_deferred(true) immediately before fetch_access_token, and a deferred
-    // response carries Connection: close, so ANY answer here closes the connection.
-    // Arming this timer and set_deferred are one thing — do not split them. A branch
-    // that armed the timer and then answered SYNCHRONOUSLY would leave a keep-alive
-    // connection open (closed() false, no pending writes), and the timer would post its
-    // 504 into a connection that already carried a real response.
-    loop_.add_timer(kDeferredSafetyWindow,
-        [this, conn, redir_error]() {
-            if (conn->closed() || conn->has_pending_writes())
-                return;
-            HttpResponse r;
+    // 2b — one safety timer for the whole deferred chain (this exchange, the userinfo
+    // fetch a provider without an id_token hands off to, and the daemon.login query at
+    // the end). It fires a refusal only if none of those steps ever answers; the first
+    // real answer through DeferredResponse::respond() disarms it. It tracks whether a
+    // branch has answered, not the connection's state: the old closed() guard confused
+    // the two and rested on "a deferred response carries Connection: close", false for a
+    // keep-alive request (the OAuth callback's default), so the 504 fired into a live
+    // connection 65 s after a SUCCESSFUL login. Full reasoning in DeferredResponse
+    // (T086; orig. T063).
+    auto deferred = DeferredResponse::arm(conn, loop_, kDeferredSafetyWindow,
+        [this, redir_error](HttpResponse& r) {
             redirect_error(r, redir_error, 504, "server_error",
                            "The sign-in did not complete in time. Please start again.");
-            conn->send_response(r);
-        },
-        /*repeat=*/false);
+        });
 
     fetch_.post(token_uri, post_body,
         {{"Content-Type", "application/x-www-form-urlencoded"}},
         // on_done
-        [this, conn, redir, redir_error, provider_name, agent, host, origin](FetchResponse resp) {
+        [this, deferred, redir, redir_error, provider_name, agent, host, origin](FetchResponse resp) {
             // Extract hostname from origin for cookie domain
             std::string hostname;
             auto scheme_end = origin.find("://");
@@ -1933,9 +1920,9 @@ void AuthServer::fetch_access_token(std::shared_ptr<HttpConnection> conn,
                                            && !id_token->get<std::string>().empty();
 
                     if (has_id_token) {
-                        login(conn, redir, redir_error, agent, host, origin, json);
+                        login(deferred, redir, redir_error, agent, host, origin, json);
                     } else if (userinfo_app && !userinfo_app->userinfo_uri.empty()) {
-                        fetch_userinfo(conn, provider_name,
+                        fetch_userinfo(deferred, provider_name,
                                        json.value("access_token", ""),
                                        redir, redir_error, agent, host, origin);
                     } else {
@@ -1966,12 +1953,12 @@ void AuthServer::fetch_access_token(std::shared_ptr<HttpConnection> conn,
                             redirect_url += "&state=" + url_encode(state);
 
                         redirect(r, redirect_url);
-                        conn->send_response(r);
+                        deferred->respond(r);
                     }
                 } catch (const std::exception& e) {
                     HttpResponse r;
                     redirect_error(r, redir_error, 500, "server_error", e.what());
-                    conn->send_response(r);
+                    deferred->respond(r);
                 }
             } else {
                 std::string error = "server_error";
@@ -1985,14 +1972,14 @@ void AuthServer::fetch_access_token(std::shared_ptr<HttpConnection> conn,
 
                 HttpResponse r;
                 redirect_error(r, redir_error, resp.status_code, error, error_desc);
-                conn->send_response(r);
+                deferred->respond(r);
             }
         },
         // on_error
-        [conn, redir_error](std::string_view error) {
+        [deferred, redir_error](std::string_view error) {
             HttpResponse r;
             redirect_error(r, redir_error, 500, "server_error", error);
-            conn->send_response(r);
+            deferred->respond(r);
         });
 }
 
@@ -2031,7 +2018,7 @@ std::string claim_as_string(const nlohmann::json& obj, const std::string& key)
 // the same provider signs in here as that provider's user. An id_token settles
 // this with its aud claim; here the answer has to say it, and we have to look.
 
-void AuthServer::fetch_userinfo(std::shared_ptr<HttpConnection> conn,
+void AuthServer::fetch_userinfo(std::shared_ptr<DeferredResponse> deferred,
                                 const std::string& provider_name,
                                 const std::string& access_token,
                                 const std::string& redir,
@@ -2052,7 +2039,7 @@ void AuthServer::fetch_userinfo(std::shared_ptr<HttpConnection> conn,
         HttpResponse r;
         redirect_error(r, redir_error, 500, "server_error",
                        "The authorization server could not complete the request.");
-        conn->send_response(r);
+        deferred->respond(r);
         return;
     }
 
@@ -2060,7 +2047,7 @@ void AuthServer::fetch_userinfo(std::shared_ptr<HttpConnection> conn,
         HttpResponse r;
         redirect_error(r, redir_error, 401, "invalid_token",
                        "The provider returned no access token.");
-        conn->send_response(r);
+        deferred->respond(r);
         return;
     }
 
@@ -2073,7 +2060,7 @@ void AuthServer::fetch_userinfo(std::shared_ptr<HttpConnection> conn,
     fetch_.get(uri,
         {{"Authorization", app->userinfo_scheme + " " + access_token}},
         // on_done
-        [this, conn, redir, redir_error, provider_name, agent, host, origin,
+        [this, deferred, redir, redir_error, provider_name, agent, host, origin,
          uri, audience, subject, client_id](FetchResponse resp) {
             HttpResponse r;
 
@@ -2086,7 +2073,7 @@ void AuthServer::fetch_userinfo(std::shared_ptr<HttpConnection> conn,
                           resp.body.substr(0, 256));
                 redirect_error(r, redir_error, 401, "invalid_token",
                                "The provider rejected the access token.");
-                conn->send_response(r);
+                deferred->respond(r);
                 return;
             }
 
@@ -2105,7 +2092,7 @@ void AuthServer::fetch_userinfo(std::shared_ptr<HttpConnection> conn,
                               "not to this application", provider_name, issued_to);
                     redirect_error(r, redir_error, 401, "invalid_token",
                                    "The access token was issued to another application.");
-                    conn->send_response(r);
+                    deferred->respond(r);
                     return;
                 }
 
@@ -2119,7 +2106,7 @@ void AuthServer::fetch_userinfo(std::shared_ptr<HttpConnection> conn,
                                provider_name, subject);
                     redirect_error(r, redir_error, 500, "server_error",
                                    "The authorization server could not complete the request.");
-                    conn->send_response(r);
+                    deferred->respond(r);
                     return;
                 }
 
@@ -2139,21 +2126,21 @@ void AuthServer::fetch_userinfo(std::shared_ptr<HttpConnection> conn,
 
                 auto token = sign_claims_jwt(*app, resp.body, sub);
 
-                login(conn, redir, redir_error, agent, host, origin,
+                login(deferred, redir, redir_error, agent, host, origin,
                       nlohmann::json{{"token_type", "Bearer"}, {"id_token", token}});
 
             } catch (const std::exception& e) {
                 log_.error("[AuthServer] userinfo {}: {}", provider_name, e.what());
                 redirect_error(r, redir_error, 500, "server_error",
                                "The authorization server could not complete the request.");
-                conn->send_response(r);
+                deferred->respond(r);
             }
         },
         // on_error
-        [conn, redir_error](std::string_view error) {
+        [deferred, redir_error](std::string_view error) {
             HttpResponse r;
             redirect_error(r, redir_error, 500, "server_error", error);
-            conn->send_response(r);
+            deferred->respond(r);
         });
 }
 

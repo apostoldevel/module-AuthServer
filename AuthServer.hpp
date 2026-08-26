@@ -10,6 +10,8 @@
 #include "apostol/service_token.hpp"
 #include "apostol/site_config.hpp"
 
+#include "DeferredResponse.hpp"
+
 #include "apostol/fetch_client.hpp"
 
 #include <nlohmann/json_fwd.hpp>
@@ -161,7 +163,7 @@ private:
                                std::string_view provider) const;
 
     // ── External providers ──────────────────────────────────────────────────
-    void login(std::shared_ptr<HttpConnection> conn,
+    void login(std::shared_ptr<DeferredResponse> deferred,
                const std::string& redirect,
                const std::string& redirect_error,
                const std::string& agent,
@@ -178,7 +180,7 @@ private:
                             const std::string& agent,
                             const std::string& host);
 
-    void fetch_userinfo(std::shared_ptr<HttpConnection> conn,
+    void fetch_userinfo(std::shared_ptr<DeferredResponse> deferred,
                         const std::string& provider_name,
                         const std::string& access_token,
                         const std::string& redir,

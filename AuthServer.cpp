@@ -1108,9 +1108,10 @@ void AuthServer::do_revoke(const HttpRequest& req, HttpResponse& resp)
     const auto peer = get_real_ip(req);
 
     if (!req.body.empty()) {
-        // RFC 7009. Read from the body only: content_to_json falls back to the
-        // query string when there is no body, and a token in a URL is a token in
-        // every access log on the way.
+        // Modelled on RFC 7009, access tokens only (the departures from it are
+        // in AuthServer.hpp). Read from the body only: content_to_json falls back
+        // to the query string when there is no body, and a token in a URL is a
+        // token in every access log on the way.
         const auto json = content_to_json(req);
 
         const auto token = json_string(json, "token");

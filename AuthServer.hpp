@@ -37,7 +37,9 @@ class Application;
 //   GET  /oauth2/identifier — GET form of identifier lookup
 //   POST /oauth2/token      — token endpoint (all grant types)
 //   POST /oauth2/identifier — identifier lookup
-//   POST /oauth2/revoke     — close the session an access token names (RFC 7009)
+//   POST /oauth2/revoke     — close the session an access token names
+//                             (modelled on RFC 7009, access tokens only —
+//                             see do_revoke below)
 //
 // Guard: WITH_POSTGRESQL && WITH_SSL.
 // External providers (Google OAuth): additionally WITH_CURL.
@@ -91,12 +93,18 @@ private:
 
     /// POST /oauth2/revoke — sign out: close the session an access token names.
     ///
-    /// Two forms. With a body it is RFC 7009: `token` in the body, an access token,
-    /// and no cookie is touched — the form for a server-side client. Without one it
-    /// is the browser's sign-out: the front end is cookie-only and holds no token it
-    /// could send, so the pair is read from __Secure-AT/__Secure-RT and every
-    /// credential cookie is erased on the answer. See do_revoke for what guards the
-    /// second form, and why an expired access token is renewed before closing.
+    /// Two forms. With a body it is modelled on RFC 7009: `token` in the body, an
+    /// access token, and no cookie is touched — the form for a server-side client.
+    /// Access tokens only, which departs from RFC 7009 §2 (refresh tokens MUST be
+    /// revocable, access tokens SHOULD): daemon.session_close finds the session by
+    /// its access token, and no call closes a session by a refresh token alone,
+    /// so a refresh token is answered 400 unsupported_token_type. So is any
+    /// token_type_hint but access_token, where §2.1 would search past the hint.
+    /// Without a body it is the browser's sign-out: the front end is cookie-only
+    /// and holds no token it could send, so the pair is read from
+    /// __Secure-AT/__Secure-RT and every credential cookie is erased on the
+    /// answer. See do_revoke for what guards the second form, and why an expired
+    /// access token is renewed before closing.
     void do_revoke(const HttpRequest& req, HttpResponse& resp);
 
     /// Close the session @p access_token names and answer @p conn. With

@@ -243,6 +243,8 @@ async function handleDetailsStep() {
       password: form.password,
       name: { first: form.firstName.trim(), last: form.lastName.trim() },
       email,
+      ticket: ticket.value,
+      code: form.code.trim(),
     })
 
     await signIn(email, form.password)

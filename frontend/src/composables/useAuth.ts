@@ -150,6 +150,11 @@ export function useAuth() {
     password: string
     name: { first: string; last: string }
     email: string
+    // The ticket from /user/registration/code and the code that passed
+    // /user/registration/check. The server checks them again: a project
+    // whose api.signup requires a confirmed address refuses sign-up without.
+    ticket: string
+    code: string
   }): Promise<void> {
     const resp = await fetch(`${config.apiHost}/api/v1/sign/up`, {
       method: 'POST',
@@ -164,6 +169,8 @@ export function useAuth() {
         password: data.password,
         name: data.name,
         email: data.email,
+        ticket: data.ticket,
+        code: data.code,
       }),
     })
     if (!resp.ok) {

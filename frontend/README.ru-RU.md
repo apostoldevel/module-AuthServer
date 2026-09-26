@@ -59,6 +59,10 @@ VITE_SCOPE=api
 VITE_APP_TITLE=Название вашего приложения
 VITE_APP_LOGO=/assets/logo.svg
 
+# `type`, который форма регистрации шлёт в /api/v1/sign/up, — то, что принимает
+# ваш api.signup (например, `tenant`). Не задано — `cpo`, прежнее значение.
+VITE_SIGNUP_TYPE=cpo
+
 # Вход через Google (необязательно — оставьте пустым, чтобы скрыть кнопку)
 VITE_GOOGLE_CLIENT_ID=
 

@@ -12,6 +12,7 @@ interface ImportMetaEnv {
   readonly VITE_SCOPE: string
   readonly VITE_APP_TITLE: string
   readonly VITE_APP_LOGO: string
+  readonly VITE_SIGNUP_TYPE: string
 }
 
 interface ImportMeta {

@@ -59,6 +59,10 @@ VITE_SCOPE=api
 VITE_APP_TITLE=Your App Name
 VITE_APP_LOGO=/assets/logo.svg
 
+# The `type` the sign-up form sends to /api/v1/sign/up — whatever your
+# api.signup accepts (e.g. `tenant`). Unset means `cpo`, the value it always sent.
+VITE_SIGNUP_TYPE=cpo
+
 # Google sign-in (optional — leave empty to hide the button)
 VITE_GOOGLE_CLIENT_ID=
 

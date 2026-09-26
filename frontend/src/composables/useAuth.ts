@@ -159,7 +159,7 @@ export function useAuth() {
       // dead — the very case recovery is for) or runs as that user.
       credentials: 'omit',
       body: JSON.stringify({
-        type: 'cpo',
+        type: config.signupType,
         username: data.username,
         password: data.password,
         name: data.name,

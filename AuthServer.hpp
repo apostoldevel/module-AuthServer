@@ -37,6 +37,7 @@ class Application;
 //   GET  /oauth2/identifier — GET form of identifier lookup
 //   POST /oauth2/token      — token endpoint (all grant types)
 //   POST /oauth2/identifier — identifier lookup
+//   POST /oauth2/revoke     — close the session an access token names (RFC 7009)
 //
 // Guard: WITH_POSTGRESQL && WITH_SSL.
 // External providers (Google OAuth): additionally WITH_CURL.
@@ -87,6 +88,32 @@ private:
     /// cannot be the guard here — the ecosystem's own nginx recipe overwrites it on
     /// every /oauth2/ request, so it always reads as ours. See do_consent.
     void do_consent(const HttpRequest& req, HttpResponse& resp);
+
+    /// POST /oauth2/revoke — sign out: close the session an access token names.
+    ///
+    /// Two forms. With a body it is RFC 7009: `token` in the body, an access token,
+    /// and no cookie is touched — the form for a server-side client. Without one it
+    /// is the browser's sign-out: the front end is cookie-only and holds no token it
+    /// could send, so the pair is read from __Secure-AT/__Secure-RT and every
+    /// credential cookie is erased on the answer. See do_revoke for what guards the
+    /// second form, and why an expired access token is renewed before closing.
+    void do_revoke(const HttpRequest& req, HttpResponse& resp);
+
+    /// Close the session @p access_token names and answer @p conn. With
+    /// @p browser the answer also erases the credential cookies.
+    void revoke_session(std::shared_ptr<HttpConnection> conn,
+                        const std::string& access_token,
+                        bool browser, const std::string& peer);
+
+    /// Pass the pair through daemon.refresh_token first, then close by the access
+    /// token it answers with. An expired access token is refused by
+    /// daemon.session_close while its session and refresh token live on; the
+    /// database, not this process's clock, decides which of the two it is —
+    /// RefreshToken hands a still-valid token back unchanged.
+    void revoke_with_refresh(std::shared_ptr<HttpConnection> conn,
+                             const std::string& access_token,
+                             const std::string& refresh_token,
+                             const std::string& peer);
 
     /// Look up the client and validate redirect_uri and scope against its
     /// registration. Returns nullptr after filling @p resp with the RFC 6749 error.
@@ -157,6 +184,10 @@ private:
     static void set_service_cookies(HttpResponse& resp,
                                     std::string_view access_token,
                                     std::string_view refresh_token);
+
+    /// The mirror of the two above: erase every credential cookie this module
+    /// issues, with the attributes it issued them with.
+    static void clear_secure_cookies(HttpResponse& resp);
 
     // ── JWT ──────────────────────────────────────────────────────────────────
     std::string get_public_key(std::string_view kid,

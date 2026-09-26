@@ -342,6 +342,18 @@ void AuthServer::set_service_cookies(HttpResponse& resp,
                         true, "None", true);
 }
 
+void AuthServer::clear_secure_cookies(HttpResponse& resp)
+{
+    // Every name set_secure_cookies and set_service_cookies write, with the same
+    // path, Secure and SameSite, and no Domain: a browser erases a cookie only by a
+    // Set-Cookie that matches it, and this module never issues one with a domain.
+    resp.set_cookie(kCookieAT,  "", "/", -1, true, "None", true);
+    resp.set_cookie(kCookieRT,  "", "/", -1, true, "None", true);
+    resp.set_cookie(kCookieSAT, "", "/", -1, true, "None", true);
+    resp.set_cookie(kCookieSRT, "", "/", -1, true, "None", true);
+    resp.set_cookie(kCookieSID, "", "/", -1, true, "Lax",  true);
+}
+
 // ─── JWT ────────────────────────────────────────────────────────────────────
 
 std::string AuthServer::get_public_key(std::string_view kid,
@@ -835,6 +847,8 @@ void AuthServer::do_post(const HttpRequest& req, HttpResponse& resp)
         do_identifier(req, resp);
     } else if (action == "consent") {
         do_consent(req, resp);
+    } else if (action == "revoke") {
+        do_revoke(req, resp);
     } else {
         reply_oauth2_error(resp, HttpStatus::not_found,
                            "invalid_request", "Not found.");
@@ -1038,6 +1052,285 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
             reply_oauth2_error(r, HttpStatus::internal_server_error,
                                "server_error", error);
             conn->send_response(r);
+        },
+        /*quiet=*/true);
+}
+
+// ─── do_revoke ──────────────────────────────────────────────────────────────
+//
+// What entitles a caller to this endpoint is holding the access token of the
+// session it closes. Whoever holds that token can already do everything the
+// session can; closing it only takes power away. So no client authentication is
+// asked for (RFC 7009 §2.1 wants it from confidential clients): here it could be
+// stood in for by the Origin header and would add nothing the token does not.
+//
+// The browser form needs one more thing. __Secure-AT is SameSite=None, so a page
+// on any site can make a signed-in browser POST here with its cookies attached,
+// and a sign-out anyone can trigger is a way to throw an officer off a watch.
+// Origin cannot be relied on to tell such a request apart: the ecosystem's nginx
+// recipe overwrites it on the sign-in host (see do_consent), so there every
+// request reads as ours. Two things can, and both are required:
+//
+//   - __Host-SID. It is SameSite=Lax, and a browser does not attach a Lax cookie
+//     to a cross-site POST, so its presence says the request came from this site.
+//   - Sec-Fetch-Site, where the browser sends it, is same-origin or none. Lax
+//     still rides along from a sibling subdomain — same-site is not same-origin —
+//     and a sibling whose https was taken is the very threat the __Host- prefix
+//     is there for. The front end calls this endpoint on its own host (/oauth2/
+//     is proxied there), so a legitimate call is same-origin.
+//
+// Refused, the cookies are left alone — erasing them is itself the sign-out a
+// forged request is after, and a Set-Cookie on the answer to one would do it.
+
+void AuthServer::do_revoke(const HttpRequest& req, HttpResponse& resp)
+{
+    const auto peer = get_real_ip(req);
+
+    if (!req.body.empty()) {
+        // RFC 7009. Read from the body only: content_to_json falls back to the
+        // query string when there is no body, and a token in a URL is a token in
+        // every access log on the way.
+        const auto json = content_to_json(req);
+
+        const auto token = json_string(json, "token");
+        const auto hint  = json_string(json, "token_type_hint");
+
+        if (token.empty()) {
+            reply_oauth2_error(resp, HttpStatus::bad_request, "invalid_request",
+                               "Parameter value token cannot be empty.");
+            return;
+        }
+
+        // daemon.session_close takes the session from a JWT access token; a
+        // refresh token is not one, and saying 200 to it would tell the client
+        // its session is closed when nothing was done (RFC 7009 §2.2.1). The hint
+        // is optional, so the shape is checked too: a refresh token here is an
+        // opaque string, not three dot-separated parts, and without this check it
+        // reached the database, was refused as a token of no known issuer, and
+        // came back 200.
+        const auto dots = std::count(token.begin(), token.end(), '.');
+        if ((!hint.empty() && hint != "access_token") || dots != 2) {
+            reply_oauth2_error(resp, HttpStatus::bad_request, "unsupported_token_type",
+                               "Only an access token can be revoked; its session "
+                               "is closed with it.");
+            return;
+        }
+
+        resp.set_deferred(true);
+        revoke_session(std::static_pointer_cast<HttpConnection>(req.connection_ctx),
+                       token, /*browser=*/false, peer);
+        return;
+    }
+
+    const auto access_token  = req.cookie(kCookieAT);
+    const auto refresh_token = req.cookie(kCookieRT);
+
+    const bool holds_credentials =
+        !access_token.empty() || !refresh_token.empty() ||
+        !req.cookie(kCookieSAT).empty() || !req.cookie(kCookieSRT).empty() ||
+        !req.cookie(kCookieSID).empty();
+
+    // Signed out already: nothing to close, nothing to erase.
+    if (!holds_credentials) {
+        resp.set_status(HttpStatus::ok);
+        return;
+    }
+
+    const auto fetch_site = req.header("Sec-Fetch-Site");
+    const bool foreign_fetch =
+        !fetch_site.empty() && fetch_site != "same-origin" && fetch_site != "none";
+
+    if (req.cookie(kCookieSID).empty() || foreign_fetch) {
+        if (foreign_fetch)
+            log_.warn("[AuthServer] revoke refused from {}: Sec-Fetch-Site: {}",
+                      peer, fetch_site);
+        else
+            log_.warn("[AuthServer] revoke refused from {}: credential cookies without "
+                      "__Host-SID — a cross-site request, or a browser signed in before "
+                      "the cookie existed", peer);
+        reply_oauth2_error(resp, HttpStatus::bad_request, "invalid_request",
+                           "Sign-out must come from a page of this site.");
+        return;
+    }
+
+    // A refresh token alone names no session daemon.session_close can reach, and
+    // daemon.refresh_token will not renew without the access token it belongs to.
+    // Erasing the cookies is all that is left to do.
+    if (access_token.empty()) {
+        log_.notice("[AuthServer] revoke from {}: no access token, cookies erased, "
+                    "no session closed", peer);
+        clear_secure_cookies(resp);
+        resp.set_status(HttpStatus::ok);
+        return;
+    }
+
+    JwtKeyResolver key_resolver = [this](std::string_view kid, std::string_view provider) {
+        return get_public_key(kid, provider);
+    };
+
+    auto conn = std::static_pointer_cast<HttpConnection>(req.connection_ctx);
+
+    // Checked here only to turn away what is not a token of ours at all — the
+    // database answers malformed input with an exception, which would read as its
+    // own failure. Whether the token is still valid is not decided here: that
+    // depends on this host's clock, and the database keeps its own.
+    try {
+        verify_jwt(access_token, providers_, key_resolver);
+    } catch (const JwtExpiredError&) {
+        // The ordinary case, not an edge: the access token lives an hour, a watch
+        // longer than that, and the cookies sixty days. With a refresh token the
+        // pair is renewed below; without one the database still gets the last
+        // word — it reads "gone" if its clock agrees, and closes the session if not.
+    } catch (const std::exception& e) {
+        // Not a token of ours, or not a token at all. There is no session it could
+        // close; to RFC 7009 §2.2 an invalid token is not an error.
+        log_.warn("[AuthServer] revoke from {}: access token rejected ({}), cookies "
+                  "erased", peer, e.what());
+        clear_secure_cookies(resp);
+        resp.set_status(HttpStatus::ok);
+        return;
+    }
+
+    resp.set_deferred(true);
+
+    if (!refresh_token.empty())
+        revoke_with_refresh(std::move(conn), access_token, refresh_token, peer);
+    else
+        revoke_session(std::move(conn), access_token, /*browser=*/true, peer);
+}
+
+void AuthServer::revoke_session(std::shared_ptr<HttpConnection> conn,
+                                const std::string& access_token,
+                                bool browser, const std::string& peer)
+{
+    db_platform::close_session(pool_, access_token,
+        [this, conn, browser, peer](const db_platform::SessionCloseResult& result) {
+            using Status = db_platform::SessionCloseResult::Status;
+
+            HttpResponse r;
+
+            // The browser's cookies go on every answer past the guard, a failure
+            // included: the button promises that this terminal holds no
+            // credentials afterwards, whatever the database said.
+            if (browser)
+                clear_secure_cookies(r);
+
+            switch (result.status) {
+                case Status::closed:
+                    log_.info("[AuthServer] revoke from {}: session closed", peer);
+                    r.set_status(HttpStatus::ok);
+                    break;
+
+                case Status::gone:
+                    r.set_status(HttpStatus::ok);
+                    break;
+
+                case Status::refused:
+                    // An invalid token is not an error to RFC 7009 §2.2, but a
+                    // refusal the caller never hears of must at least be seen here.
+                    log_.warn("[AuthServer] revoke from {}: refused by the database: {}",
+                              peer, result.message);
+                    r.set_status(HttpStatus::ok);
+                    break;
+
+                case Status::failed:
+                    // RFC 7009 §2.2.1: 503, and the client must assume the token
+                    // is still valid.
+                    log_.error("[AuthServer] revoke from {}: session not closed: {}",
+                               peer, result.message);
+                    reply_oauth2_error(r, HttpStatus::service_unavailable,
+                                       "temporarily_unavailable",
+                                       "The session could not be closed. Try again later.");
+                    break;
+            }
+
+            conn->send_response(r);
+        });
+}
+
+void AuthServer::revoke_with_refresh(std::shared_ptr<HttpConnection> conn,
+                                     const std::string& access_token,
+                                     const std::string& refresh_token,
+                                     const std::string& peer)
+{
+    const auto fail = [this, conn, peer](std::string_view why) {
+        log_.error("[AuthServer] revoke from {}: session not closed: {}", peer, why);
+        HttpResponse r;
+        clear_secure_cookies(r);
+        reply_oauth2_error(r, HttpStatus::service_unavailable, "temporarily_unavailable",
+                           "The session could not be closed. Try again later.");
+        conn->send_response(r);
+    };
+
+    // quiet: the statement carries both tokens, the refresh token among them — the
+    // longest-lived credential there is.
+    pool_.execute(fmt::format("SELECT daemon.refresh_token({}, {})",
+                              pq_quote_literal(access_token),
+                              pq_quote_literal(refresh_token)),
+        [this, conn, peer, fail](std::vector<PgResult> results) {
+            if (results.empty() || !results[0].ok() ||
+                results[0].rows() == 0 || results[0].columns() == 0) {
+                const char* msg = results.empty() ? nullptr : results[0].error_message();
+                fail(msg ? msg : "no answer to the token refresh");
+                return;
+            }
+
+            const char* v = results[0].value(0, 0);
+            nlohmann::json j;
+            try {
+                j = nlohmann::json::parse(v ? v : "");
+            } catch (const std::exception&) {
+                fail("the token refresh answered something that is not json");
+                return;
+            }
+
+            if (j.contains("error")) {
+                const auto& e = j["error"];
+
+                int code = 400;
+                std::string error, message;
+                try {
+                    if (e.is_object()) {
+                        code    = e.value("code", 400);
+                        error   = e.value("error", "");
+                        message = e.value("message", "");
+                    }
+                } catch (const nlohmann::json::exception&) {
+                    fail(j.dump());
+                    return;
+                }
+
+                if (code >= 500) {
+                    fail(message.empty() ? j.dump() : message);
+                    return;
+                }
+
+                // Refused. Usually the session is simply gone — its tokens expired
+                // or were swept (ERR-401-008). But "Malformed refresh token" is also
+                // what a refresh token rotated by someone else more than the reuse
+                // window ago looks like, and then a session lives on that nothing
+                // here can reach: the pair that closes it is not ours. Either way
+                // the terminal is cleared; the log says which of the two it was.
+                log_.warn("[AuthServer] revoke from {}: the refresh was refused ({} {}: "
+                          "{}), no session closed from here", peer, code, error, message);
+
+                HttpResponse r;
+                clear_secure_cookies(r);
+                r.set_status(HttpStatus::ok);
+                conn->send_response(r);
+                return;
+            }
+
+            const auto renewed = json_string(j, "access_token");
+            if (renewed.empty()) {
+                fail("the token refresh returned no access token");
+                return;
+            }
+
+            revoke_session(conn, renewed, /*browser=*/true, peer);
+        },
+        [fail](std::string_view error) {
+            fail(error);
         },
         /*quiet=*/true);
 }

@@ -72,24 +72,12 @@ export function useAuth() {
     }
   }
 
-  /**
-   * POST /oauth2/token with grant_type=client_credentials
-   * Returns access_token string (for service-level API calls).
-   */
-  async function getServiceToken(): Promise<string> {
-    const resp = await fetch(`${config.apiHost}/oauth2/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        grant_type: 'client_credentials',
-        client_id: config.clientId,
-        scope: config.scope,
-      }),
-    })
-    if (!resp.ok) throw new Error('Failed to get service token')
-    const data = await resp.json()
-    return data.access_token
-  }
+  // No service token here any more (T289). A browser page is a public client
+  // (RFC 6749 §2.1) and client_credentials is for confidential ones (§4.4):
+  // minting one here only worked because the server filled the secret in on
+  // the Origin, which made the service client public. The guest calls below go
+  // out with no credentials; AppServer runs them under its own service token
+  // (module.AppServer.guest_routes), as AuthServer does /oauth2/identifier.
 
   /** POST /oauth2/identifier — check if email/phone/username exists */
   /**
@@ -108,6 +96,10 @@ export function useAuth() {
     const resp = await fetch(`${config.apiHost}/oauth2/identifier`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      // A guest call: no cookies. A stale __Secure-AT on this host would
+      // otherwise make it an authenticated call that fails (the session is
+      // dead — the very case recovery is for) or runs as that user.
+      credentials: 'omit',
       body: JSON.stringify({ value }),
     })
     if (!resp.ok) throw new Error('Identifier check failed')
@@ -120,13 +112,13 @@ export function useAuth() {
 
   /** POST /api/v1/user/registration/code — send verification code to email */
   async function requestVerificationCode(email: string): Promise<string> {
-    const token = await getServiceToken()
     const resp = await fetch(`${config.apiHost}/api/v1/user/registration/code`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
+      headers: { 'Content-Type': 'application/json' },
+      // A guest call: no cookies. A stale __Secure-AT on this host would
+      // otherwise make it an authenticated call that fails (the session is
+      // dead — the very case recovery is for) or runs as that user.
+      credentials: 'omit',
       body: JSON.stringify({ email }),
     })
     if (!resp.ok) throw new Error('Failed to send verification code')
@@ -139,13 +131,13 @@ export function useAuth() {
     ticket: string,
     code: string,
   ): Promise<{ result: boolean; message: string }> {
-    const token = await getServiceToken()
     const resp = await fetch(`${config.apiHost}/api/v1/user/registration/check`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
+      headers: { 'Content-Type': 'application/json' },
+      // A guest call: no cookies. A stale __Secure-AT on this host would
+      // otherwise make it an authenticated call that fails (the session is
+      // dead — the very case recovery is for) or runs as that user.
+      credentials: 'omit',
       body: JSON.stringify({ ticket, code }),
     })
     if (!resp.ok) throw new Error('Code verification failed')
@@ -159,13 +151,13 @@ export function useAuth() {
     name: { first: string; last: string }
     email: string
   }): Promise<void> {
-    const token = await getServiceToken()
-    await fetch(`${config.apiHost}/api/v1/sign/up`, {
+    const resp = await fetch(`${config.apiHost}/api/v1/sign/up`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
+      headers: { 'Content-Type': 'application/json' },
+      // A guest call: no cookies. A stale __Secure-AT on this host would
+      // otherwise make it an authenticated call that fails (the session is
+      // dead — the very case recovery is for) or runs as that user.
+      credentials: 'omit',
       body: JSON.stringify({
         type: 'cpo',
         username: data.username,
@@ -174,6 +166,10 @@ export function useAuth() {
         email: data.email,
       }),
     })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(err.error_description || err.error?.message || 'Registration failed')
+    }
   }
 
   return {
@@ -182,7 +178,6 @@ export function useAuth() {
     signIn,
     signOut,
     getSession,
-    getServiceToken,
     checkIdentifier,
     requestVerificationCode,
     checkRegistrationCode,

@@ -105,11 +105,9 @@
 <script setup lang="ts">
 import { ref, reactive, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useAuth } from '@/composables/useAuth'
 import { config } from '@/config'
 
 const { t } = useI18n()
-const { getServiceToken } = useAuth()
 
 const step = ref<'email' | 'code' | 'password' | 'success'>('email')
 const ticket = ref('')
@@ -160,13 +158,13 @@ async function handleEmailStep() {
 
   submitting.value = true
   try {
-    const token = await getServiceToken()
     const resp = await fetch(`${config.apiHost}/api/v1/user/password/recovery`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
+      headers: { 'Content-Type': 'application/json' },
+      // A guest call: no cookies. A stale __Secure-AT on this host would
+      // otherwise make it an authenticated call that fails (the session is
+      // dead — the very case recovery is for) or runs as that user.
+      credentials: 'omit',
       body: JSON.stringify({ identifier: email }),
     })
     if (!resp.ok) {
@@ -192,14 +190,17 @@ async function handleCodeStep() {
 
   submitting.value = true
   try {
-    const token = await getServiceToken()
-    const resp = await fetch(`${config.apiHost}/api/v1/user/password/recovery/check`, {
+    // The platform checks the recovery code as the ticket's security answer:
+    // /user/security/answer {ticket, securityanswer}. The path this called,
+    // /user/password/recovery/check, exists nowhere in the API (T289).
+    const resp = await fetch(`${config.apiHost}/api/v1/user/security/answer`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ ticket: ticket.value, code }),
+      headers: { 'Content-Type': 'application/json' },
+      // A guest call: no cookies. A stale __Secure-AT on this host would
+      // otherwise make it an authenticated call that fails (the session is
+      // dead — the very case recovery is for) or runs as that user.
+      credentials: 'omit',
+      body: JSON.stringify({ ticket: ticket.value, securityanswer: code }),
     })
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}))
@@ -225,16 +226,18 @@ async function handlePasswordStep() {
 
   submitting.value = true
   try {
-    const token = await getServiceToken()
     const resp = await fetch(`${config.apiHost}/api/v1/user/password/reset`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
+      headers: { 'Content-Type': 'application/json' },
+      // A guest call: no cookies. A stale __Secure-AT on this host would
+      // otherwise make it an authenticated call that fails (the session is
+      // dead — the very case recovery is for) or runs as that user.
+      credentials: 'omit',
+      // /user/password/reset takes {ticket, securityanswer, password}; an
+      // unknown key ("code") is refused by the API's key check (T289).
       body: JSON.stringify({
         ticket: ticket.value,
-        code: form.code.trim(),
+        securityanswer: form.code.trim(),
         password: form.password,
       }),
     })

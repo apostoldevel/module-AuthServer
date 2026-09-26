@@ -259,6 +259,13 @@ private:
     const SiteConfigs& sites_;
     bool enabled_;
 
+    /// module.AuthServer.client_credentials_by_origin (default true). When
+    /// false, a client_credentials grant whose secret this module would fill
+    /// in from the Origin check is refused (400 unauthorized_client): the
+    /// grant is for confidential clients (RFC 6749 §4.4), and a secret handed
+    /// out to anyone who sends the right Origin makes the client public.
+    bool client_credentials_by_origin_ = true;
+
     // JWKS key cache (runtime, per-provider)
     struct ProviderKeyCache {
         enum class Status { unknown, fetching, success, failed };

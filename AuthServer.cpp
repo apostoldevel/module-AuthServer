@@ -932,8 +932,7 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
         }
 
         if (auth_password.empty()) {
-            auto* app = providers_.find_by_client_id(auth_username);
-            if (app && (app->name == WEB_APP || app->name == SVC_APP)) {
+            if (auto* app = secret_fill_app(providers_, auth_username)) {
 
                 // Validate redirect_uri if provided
                 if (!redirect_uri.empty()) {

@@ -1,6 +1,7 @@
 #if defined(WITH_POSTGRESQL) && defined(WITH_SSL)
 
 #include "AuthServer.hpp"
+#include "SecretFill.hpp"
 #include "apostol/application.hpp"
 
 #include "apostol/http_utils.hpp"
@@ -46,9 +47,6 @@ static constexpr const char* kUserAgent = "AuthServer/2.0";
 // Recorded as db.session.host for the service session. Loopback: the grant is
 // issued by this process against its own database, not on behalf of a client.
 static constexpr const char* kServiceHost = "127.0.0.1";
-
-static constexpr const char* WEB_APP   = "web";
-static constexpr const char* SVC_APP   = "service";
 
 static constexpr auto kHeartbeatInterval = std::chrono::minutes(30);
 static constexpr auto kRetryInterval     = std::chrono::seconds(5);

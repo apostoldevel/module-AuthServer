@@ -6,6 +6,10 @@
 
 namespace apostol {
 
+// Application (section) names within a provider file.
+inline constexpr const char* WEB_APP = "web";
+inline constexpr const char* SVC_APP = "service";
+
 /// The application whose client_secret /oauth2/token may fill in on the
 /// strength of the request's Origin, or nullptr when it may not.
 ///
@@ -28,15 +32,16 @@ namespace apostol {
 /// line (validate_client): a local provider of its own — `bridge`, the ship's
 /// console — has a `web` application that lives on this very fill.
 ///
-/// Known weakness: `external` defaults to false, so an external provider whose
-/// file does not set it is still taken for a local one (T334).
+/// `external` is a flag of the application (the section), not of the file:
+/// a section that does not set it is taken for a local one even in an external
+/// provider's file, and so is a flag set at file level or as a string (T334).
 inline const OAuthApp* secret_fill_app(const OAuthProviders& providers,
                                        std::string_view client_id)
 {
     const auto* app = providers.find_by_client_id(client_id);
     if (app == nullptr || app->external)
         return nullptr;
-    if (app->name != "web" && app->name != "service")
+    if (app->name != WEB_APP && app->name != SVC_APP)
         return nullptr;
     return app;
 }

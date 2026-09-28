@@ -11,7 +11,6 @@
 #include "apostol/site_config.hpp"
 
 #include "DeferredResponse.hpp"
-#include "SecretFill.hpp"
 
 #include "apostol/fetch_client.hpp"
 

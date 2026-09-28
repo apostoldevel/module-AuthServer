@@ -13,12 +13,22 @@ inline constexpr const char* SVC_APP = "service";
 /// The application whose client_secret /oauth2/token may fill in on the
 /// strength of the request's Origin, or nullptr when it may not.
 ///
-/// A browser client cannot keep a secret, so for our own `web` and `service`
-/// applications the server supplies it once the Origin matches the
-/// application's javascript_origins (checked by the caller). That is a grant of
-/// standing: whoever holds the client_id and sends the right Origin becomes a
-/// client of ours — and where nginx sets Origin itself (the auth host does), the
-/// client_id alone is enough.
+/// A browser client cannot keep a secret, so for our own `web` application the
+/// server supplies it once the Origin matches the application's
+/// javascript_origins (checked by the caller). That is a grant of standing:
+/// whoever holds the client_id and sends the right Origin becomes a client of
+/// ours — and where nginx sets Origin itself (the auth host does), the
+/// client_id alone is enough. Origin is a request header: outside a browser
+/// anyone sends any value.
+///
+/// Never to `service` (apostol-csms T599). Its audience is the platform's own:
+/// cs admits station commands on it, GatewayAPI its modules. Filled by Origin,
+/// it was one header away for anyone — a service token by client_credentials
+/// with no credentials at all, and a user's own token on that audience by
+/// password, since daemon.token does not tie grants to an audience. No browser
+/// signs in as `service`: the SPAs and the ocpp console use `web`, and AppServer
+/// runs guest routes with its own token (T289). Its callers are servers and
+/// send the secret themselves.
 ///
 /// So it goes to applications of this installation only, never to an external
 /// provider's (T331). find_by_client_id searches every provider, and the Yandex
@@ -41,7 +51,7 @@ inline const OAuthApp* secret_fill_app(const OAuthProviders& providers,
     const auto* app = providers.find_by_client_id(client_id);
     if (app == nullptr || app->external)
         return nullptr;
-    if (app->name != WEB_APP && app->name != SVC_APP)
+    if (app->name != WEB_APP)
         return nullptr;
     return app;
 }

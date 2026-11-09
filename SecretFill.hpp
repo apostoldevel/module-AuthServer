@@ -15,20 +15,14 @@ inline constexpr const char* SVC_APP = "service";
 ///
 /// A browser client cannot keep a secret, so for our own `web` application the
 /// server supplies it once the Origin matches the application's
-/// javascript_origins (checked by the caller). That is a grant of standing:
-/// whoever holds the client_id and sends the right Origin becomes a client of
-/// ours — and where nginx sets Origin itself (the auth host does), the
-/// client_id alone is enough. Origin is a request header: outside a browser
-/// anyone sends any value.
+/// javascript_origins (checked by the caller). Origin is a request header, not
+/// proof of identity: the match gates the fill, it does not authenticate the
+/// client.
 ///
-/// Never to `service`. Its audience is the platform's own:
-/// the platform's own services admit commands on it, GatewayAPI its modules. Filled by Origin,
-/// it was one header away for anyone — a service token by client_credentials
-/// with no credentials at all, and a user's own token on that audience by
-/// password, since daemon.token does not tie grants to an audience. No browser
-/// signs in as `service`: the SPAs and the consoles use `web`, and AppServer
-/// runs guest routes with its own token. Its callers are servers and
-/// send the secret themselves.
+/// Never to `service`: it is a server-to-server application whose token
+/// audience is the platform's own, so its callers send the secret themselves.
+/// No browser signs in as `service`: the SPAs and the consoles use `web`, and
+/// AppServer runs guest routes with its own token.
 ///
 /// So it goes to applications of this installation only, never to an external
 /// provider's. find_by_client_id searches every provider, and the Yandex

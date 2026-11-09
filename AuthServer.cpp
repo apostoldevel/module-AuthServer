@@ -961,13 +961,10 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
                     return;
                 }
 
-                // The secret is about to be filled in on the strength of the
-                // Origin alone — a request header, which on /oauth2/ nginx
-                // sets itself on one host and passes through on the others.
-                // For client_credentials that turns a confidential client into
-                // a public one: whoever sends the right Origin gets its token.
-                // RFC 6749 §4.4: the grant is for confidential clients
-                // only; §5.2: unauthorized_client.
+                // A secret filled in from the Origin makes the client
+                // effectively public, so with client_credentials_by_origin off
+                // the grant is refused here (RFC 6749 §4.4 limits it to
+                // confidential clients; §5.2: unauthorized_client).
                 if (grant_type == "client_credentials" && !client_credentials_by_origin_) {
                     reply_oauth2_error(resp, HttpStatus::bad_request,
                                        "unauthorized_client",

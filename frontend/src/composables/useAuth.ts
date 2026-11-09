@@ -72,7 +72,7 @@ export function useAuth() {
     }
   }
 
-  // No service token here any more (T289). A browser page is a public client
+  // No service token here any more. A browser page is a public client
   // (RFC 6749 §2.1) and client_credentials is for confidential ones (§4.4):
   // minting one here only worked because the server filled the secret in on
   // the Origin, which made the service client public. The guest calls below go

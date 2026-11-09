@@ -24,8 +24,7 @@ namespace apostol {
 /// inside `if (!req.keep_alive())` (libapostol `http.cpp`), i.e. only when the
 /// CLIENT asked to close. The OAuth callback arrives keep-alive by default, so a
 /// deferred answer leaves the connection open, `closed()` stays false, and the
-/// watchdog fired its 504 into a live connection 65 s after a SUCCESSFUL login
-/// (T086; originally T063).
+/// watchdog fired its 504 into a live connection 65 s after a SUCCESSFUL login.
 ///
 /// So this class does not test the connection to decide whether the request has
 /// been answered — those are two different questions, and `closed()` was the wrong
@@ -38,7 +37,7 @@ namespace apostol {
 /// That one latch closes both races: the watchdog's 504 can never follow a real
 /// answer, and a late provider reply can never follow the watchdog's. Disarming on
 /// the real answer also releases the timerfd now, not 65 s later — one descriptor
-/// per login attempt on a slow satellite link mattered.
+/// per login attempt on a constrained link mattered.
 ///
 /// Single-threaded: it lives on one event loop, so the latch needs no atomics.
 ///

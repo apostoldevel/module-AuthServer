@@ -191,8 +191,8 @@ async function handleCodeStep() {
   submitting.value = true
   try {
     // The platform checks the recovery code as the ticket's security answer:
-    // /user/security/answer {ticket, securityanswer}. The path this called,
-    // /user/password/recovery/check, exists nowhere in the API (T289).
+    // /user/security/answer {ticket, securityanswer}. There is no separate
+    // recovery-check endpoint in the API.
     const resp = await fetch(`${config.apiHost}/api/v1/user/security/answer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -234,7 +234,7 @@ async function handlePasswordStep() {
       // dead — the very case recovery is for) or runs as that user.
       credentials: 'omit',
       // /user/password/reset takes {ticket, securityanswer, password}; an
-      // unknown key ("code") is refused by the API's key check (T289).
+      // unknown key ("code") is refused by the API's key check.
       body: JSON.stringify({
         ticket: ticket.value,
         securityanswer: form.code.trim(),

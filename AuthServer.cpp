@@ -51,7 +51,7 @@ static constexpr const char* kServiceHost = "127.0.0.1";
 static constexpr auto kHeartbeatInterval = std::chrono::minutes(30);
 static constexpr auto kRetryInterval     = std::chrono::seconds(5);
 
-// T063. Two independent limits on the outbound-provider login path.
+// Two independent limits on the outbound-provider login path.
 //   2a — a per-request ceiling on the outbound HTTP call itself. Without it a
 //        provider that accepts the connection and then never answers hangs the
 //        sign-in with no bound at all; curl reports the timeout as on_error,
@@ -66,14 +66,14 @@ static constexpr auto kRetryInterval     = std::chrono::seconds(5);
 // the caller sees "sign-in failed", never a gateway error.
 //
 // This last ordering — 30 < 65 < proxy_read_timeout — is a coupling across two
-// repositories with nothing to enforce it. nginx currently sets 90
-// (.docker/nginx-certbot/default.conf.template, proxy_read_timeout, carries the
-// mirror of this note). Drop it to 60 — nginx's own default — and the 65s safety
+// repositories with nothing to enforce it. The fronting proxy's
+// proxy_read_timeout must stay above the safety window. Drop it to 60 — nginx's
+// own default — and the 65s safety
 // timer becomes unreachable: the gateway answers first, the "did not complete in
 // time" message never appears, and the failure reverts to the traceless 504 that
-// T058 cost half a day. Keep proxy_read_timeout above kDeferredSafetyWindow.
+// is hard to diagnose. Keep proxy_read_timeout above kDeferredSafetyWindow.
 static constexpr long kFetchTimeoutMs      = 30000;                    // 2a
-static constexpr auto kDeferredSafetyWindow = std::chrono::seconds(65); // 2b, < nginx proxy_read_timeout (90)
+static constexpr auto kDeferredSafetyWindow = std::chrono::seconds(65); // 2b, < proxy_read_timeout
 
 static constexpr const char* kCookieAT  = "__Secure-AT";
 static constexpr const char* kCookieRT  = "__Secure-RT";
@@ -122,9 +122,8 @@ AuthServer::AuthServer(Application& app)
     fetch_.set_timeout(kFetchTimeoutMs);
     load_allowed_origins(providers_);
 
-    // Default true: the behaviour every project had so far (CSMS, the
-    // templates). A project that has moved its browsers off client_credentials
-    // turns it off (T289).
+    // Default true: the behaviour of existing deployments. A deployment that
+    // has moved its browsers off client_credentials turns it off.
     client_credentials_by_origin_ =
         app.config().get_bool("module.AuthServer.client_credentials_by_origin", true);
 }
@@ -572,7 +571,7 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
         // make redirect_login read as "?client_id=…", which the browser resolves
         // against /oauth2/authorize and lands right back here — a redirect loop, worse
         // than the finite 404 it replaced. Kept empty when there is no page to send to,
-        // and refused below rather than redirected (T065). do_consent shares this
+        // and refused below rather than redirected. do_consent shares this
         // reasoning — no relative Location — and its comment points here, but the mirror
         // is only partial: do_consent always returns to the identifier page, while this
         // path also offers the secret page (prompt=secret). That branch has no
@@ -754,15 +753,15 @@ void AuthServer::do_get(const HttpRequest& req, HttpResponse& resp)
 
     } else if (action == "callback") {
 
-        // Same loop guard as the sign-in redirect above (T065). redirect_callback is
+        // Same loop guard as the sign-in redirect above. redirect_callback is
         // site->oauth2.callback, empty when the site did not configure it, and an empty
         // Location resolves relative to /oauth2/callback — the browser lands right back
         // here. Refuse to the site error page instead; redirect_error is itself
-        // loop-safe (a JSON error when that page too is unset). The mechanical version
-        // of this guard, inside redirect() so no caller has to remember it, is T087.
+        // loop-safe (a JSON error when that page too is unset). redirect() adds no such
+        // check of its own, so every caller keeps this one.
         if (redirect_callback.empty()) {
             // redirect_error is static and cannot log; the /error screen no longer shows
-            // the prose (T050), so name the cause here — this is a deployment fault, and
+            // the prose, so name the cause here — this is a deployment fault, and
             // the log is where it has to be visible.
             log_.warn("[AuthServer] callback refused: oauth2.callback is not configured "
                       "for host \"{}\"", host);
@@ -966,8 +965,8 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
                 // Origin alone — a request header, which on /oauth2/ nginx
                 // sets itself on one host and passes through on the others.
                 // For client_credentials that turns a confidential client into
-                // a public one: whoever sends the right Origin gets its token
-                // (T289). RFC 6749 §4.4: the grant is for confidential clients
+                // a public one: whoever sends the right Origin gets its token.
+                // RFC 6749 §4.4: the grant is for confidential clients
                 // only; §5.2: unauthorized_client.
                 if (grant_type == "client_credentials" && !client_credentials_by_origin_) {
                     reply_oauth2_error(resp, HttpStatus::bad_request,
@@ -1084,7 +1083,7 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
 //
 // The browser form needs one more thing. __Secure-AT is SameSite=None, so a page
 // on any site can make a signed-in browser POST here with its cookies attached,
-// and a sign-out anyone can trigger is a way to throw an officer off a watch.
+// and a sign-out anyone can trigger is a way to end someone else's session.
 // Origin cannot be relied on to tell such a request apart: the ecosystem's nginx
 // recipe overwrites it on the sign-in host (see do_consent), so there every
 // request reads as ours. Two things can, and both are required:
@@ -2228,8 +2227,7 @@ void AuthServer::fetch_access_token(std::shared_ptr<HttpConnection> conn,
     // branch has answered, not the connection's state: the old closed() guard confused
     // the two and rested on "a deferred response carries Connection: close", false for a
     // keep-alive request (the OAuth callback's default), so the 504 fired into a live
-    // connection 65 s after a SUCCESSFUL login. Full reasoning in DeferredResponse
-    // (T086; orig. T063).
+    // connection 65 s after a SUCCESSFUL login. Full reasoning in DeferredResponse.
     auto deferred = DeferredResponse::arm(conn, loop_, kDeferredSafetyWindow,
         [this, redir_error](HttpResponse& r) {
             redirect_error(r, redir_error, 504, "server_error",

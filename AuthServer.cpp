@@ -2,6 +2,7 @@
 
 #include "AuthServer.hpp"
 #include "SecretFill.hpp"
+#include "TokenRevocation.hpp"
 #include "apostol/application.hpp"
 
 #include "apostol/http_utils.hpp"
@@ -1072,9 +1073,9 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
 
 // ─── do_revoke ──────────────────────────────────────────────────────────────
 //
-// What entitles a caller to this endpoint is holding the access token of the
-// session it closes. Whoever holds that token can already do everything the
-// session can; closing it only takes power away. So no client authentication is
+// What entitles a caller to this endpoint is holding a token of the session it
+// closes. Whoever holds that token can already do everything the session can;
+// closing it only takes power away. So no client authentication is
 // asked for (RFC 7009 §2.1 wants it from confidential clients): here it could be
 // stood in for by the Origin header and would add nothing the token does not.
 //
@@ -1101,10 +1102,9 @@ void AuthServer::do_revoke(const HttpRequest& req, HttpResponse& resp)
     const auto peer = get_real_ip(req);
 
     if (!req.body.empty()) {
-        // Modelled on RFC 7009, access tokens only (the departures from it are
-        // in AuthServer.hpp). Read from the body only: content_to_json falls back
-        // to the query string when there is no body, and a token in a URL is a
-        // token in every access log on the way.
+        // RFC 7009 §2. Read from the body only: content_to_json falls back to the
+        // query string when there is no body, and a token in a URL is a token in
+        // every access log on the way.
         const auto json = content_to_json(req);
 
         const auto token = json_string(json, "token");
@@ -1116,24 +1116,18 @@ void AuthServer::do_revoke(const HttpRequest& req, HttpResponse& resp)
             return;
         }
 
-        // daemon.session_close takes the session from a JWT access token; a
-        // refresh token is not one, and saying 200 to it would tell the client
-        // its session is closed when nothing was done (RFC 7009 §2.2.1). The hint
-        // is optional, so the shape is checked too: a refresh token here is an
-        // opaque string, not three dot-separated parts, and without this check it
-        // reached the database, was refused as a token of no known issuer, and
-        // came back 200.
-        const auto dots = std::count(token.begin(), token.end(), '.');
-        if ((!hint.empty() && hint != "access_token") || dots != 2) {
-            reply_oauth2_error(resp, HttpStatus::bad_request, "unsupported_token_type",
-                               "Only an access token can be revoked; its session "
-                               "is closed with it.");
+        // Access, refresh and id tokens alike, under any hint or none: the
+        // database searches all three (§2.1), so nothing is refused here for its
+        // type or its hint. A value no token of ours can have is not sent at all:
+        // to §2.2 an invalid token is not an error.
+        if (!plausible_token(token)) {
+            resp.set_status(HttpStatus::ok);
             return;
         }
 
         resp.set_deferred(true);
-        revoke_session(std::static_pointer_cast<HttpConnection>(req.connection_ctx),
-                       token, /*browser=*/false, peer);
+        revoke_token(std::static_pointer_cast<HttpConnection>(req.connection_ctx),
+                     token, hint, peer);
         return;
     }
 
@@ -1212,6 +1206,55 @@ void AuthServer::do_revoke(const HttpRequest& req, HttpResponse& resp)
         revoke_with_refresh(std::move(conn), access_token, refresh_token, peer);
     else
         revoke_session(std::move(conn), access_token, /*browser=*/true, peer);
+}
+
+void AuthServer::revoke_token(std::shared_ptr<HttpConnection> conn,
+                              const std::string& token, const std::string& hint,
+                              const std::string& peer)
+{
+    const auto fail = [this, conn, peer](std::string_view why) {
+        // RFC 7009 §2.2.1: 503, and the client must assume the token is still
+        // valid.
+        log_.error("[AuthServer] revoke from {}: token not revoked: {}", peer, why);
+        HttpResponse r;
+        reply_oauth2_error(r, HttpStatus::service_unavailable, "temporarily_unavailable",
+                           "The token could not be revoked. Try again later.");
+        conn->send_response(r);
+    };
+
+    pool_.execute(session_revoke_sql(token, hint),
+        [this, conn, peer, fail](std::vector<PgResult> results) {
+            if (results.empty() || !results[0].ok()) {
+                const char* msg = results.empty() ? nullptr : results[0].error_message();
+                fail(msg ? msg : "no answer to the revocation");
+                return;
+            }
+            if (results[0].rows() == 0 || results[0].columns() == 0) {
+                fail("the revocation answered no row");
+                return;
+            }
+
+            const auto answer = read_session_revoke(results[0].value(0, 0));
+
+            if (revoke_http_status(answer) != 200) {
+                fail(answer.message);
+                return;
+            }
+
+            // not_found needs no line: to §2.2 an invalid token is not an error —
+            // expired, unknown, revoked already, or not a token of ours at all.
+            if (answer.status == RevokeAnswer::Status::revoked)
+                log_.info("[AuthServer] revoke from {}: token revoked, session closed", peer);
+
+            HttpResponse r;
+            r.set_status(HttpStatus::ok);
+            conn->send_response(r);
+        },
+        fail,
+        // quiet: the statement carries the token. A repeat after a lost
+        // connection is harmless: a token revoked by the first run is found no
+        // more, and the answer is 200 either way.
+        /*quiet=*/true, PgRetry::if_lost);
 }
 
 void AuthServer::revoke_session(std::shared_ptr<HttpConnection> conn,

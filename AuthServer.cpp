@@ -76,6 +76,14 @@ static constexpr auto kRetryInterval     = std::chrono::seconds(5);
 static constexpr long kFetchTimeoutMs      = 30000;                    // 2a
 static constexpr auto kDeferredSafetyWindow = std::chrono::seconds(65); // 2b, < proxy_read_timeout
 
+// How long a revocation waits for the database before it answers 503. The
+// statements are an indexed lookup and a session close; what keeps them longer
+// is a database that is not there — the pool holds the query until it is back,
+// and with no deadline the client would hear nothing for as long as the outage
+// lasts, or a proxy's gateway error instead of the 503 RFC 7009 §2.2.1 tells it
+// to retry on. Below the fronting proxy's proxy_read_timeout, as the window above.
+static constexpr auto kRevokeWindow = std::chrono::seconds(10);
+
 static constexpr const char* kCookieAT  = "__Secure-AT";
 static constexpr const char* kCookieRT  = "__Secure-RT";
 static constexpr const char* kCookieSAT = "__Secure-SAT";
@@ -1110,23 +1118,23 @@ void AuthServer::do_revoke(const HttpRequest& req, HttpResponse& resp)
         const auto token = json_string(json, "token");
         const auto hint  = json_string(json, "token_type_hint");
 
-        if (token.empty()) {
-            reply_oauth2_error(resp, HttpStatus::bad_request, "invalid_request",
-                               "Parameter value token cannot be empty.");
-            return;
-        }
-
         // Access, refresh and id tokens alike, under any hint or none: the
         // database searches all three (§2.1), so nothing is refused here for its
-        // type or its hint. A value no token of ours can have is not sent at all:
-        // to §2.2 an invalid token is not an error.
-        if (!plausible_token(token)) {
-            resp.set_status(HttpStatus::ok);
+        // type or its hint. A value no token can have is a request that mangled
+        // its token on the way (check_revoke_token): refused out loud, since a 200
+        // would tell the client the token is gone.
+        const auto check = check_revoke_token(token);
+
+        if (check.verdict == RevokeTokenCheck::Verdict::malformed) {
+            log_.warn("[AuthServer] revoke refused from {}: {}", peer, check.description);
+            reply_oauth2_error(resp, HttpStatus::bad_request, "invalid_request",
+                               check.description);
             return;
         }
 
         resp.set_deferred(true);
-        revoke_token(std::static_pointer_cast<HttpConnection>(req.connection_ctx),
+        revoke_token(arm_revoke(std::static_pointer_cast<HttpConnection>(req.connection_ctx),
+                                /*browser=*/false, peer),
                      token, hint, peer);
         return;
     }
@@ -1202,28 +1210,48 @@ void AuthServer::do_revoke(const HttpRequest& req, HttpResponse& resp)
 
     resp.set_deferred(true);
 
+    auto deferred = arm_revoke(std::move(conn), /*browser=*/true, peer);
+
     if (!refresh_token.empty())
-        revoke_with_refresh(std::move(conn), access_token, refresh_token, peer);
+        revoke_with_refresh(std::move(deferred), access_token, refresh_token, peer);
     else
-        revoke_session(std::move(conn), access_token, /*browser=*/true, peer);
+        revoke_session(std::move(deferred), access_token, /*browser=*/true, peer);
 }
 
-void AuthServer::revoke_token(std::shared_ptr<HttpConnection> conn,
+std::shared_ptr<DeferredResponse> AuthServer::arm_revoke(std::shared_ptr<HttpConnection> conn,
+                                                         bool browser, const std::string& peer)
+{
+    // A query still waiting when the deadline passes is left to run: the client
+    // has been told to assume its token lives, and a token closed after all is
+    // found no more on the retry — 200 either way.
+    return DeferredResponse::arm(std::move(conn), loop_, kRevokeWindow,
+        [this, browser, peer](HttpResponse& r) {
+            log_.error("[AuthServer] revoke from {}: no answer from the database in {} s",
+                       peer, kRevokeWindow.count());
+            if (browser)
+                clear_secure_cookies(r);
+            reply_oauth2_error(r, HttpStatus::service_unavailable, "temporarily_unavailable",
+                               browser ? "The session could not be closed. Try again later."
+                                       : "The token could not be revoked. Try again later.");
+        });
+}
+
+void AuthServer::revoke_token(std::shared_ptr<DeferredResponse> deferred,
                               const std::string& token, const std::string& hint,
                               const std::string& peer)
 {
-    const auto fail = [this, conn, peer](std::string_view why) {
+    const auto fail = [this, deferred, peer](std::string_view why) {
         // RFC 7009 §2.2.1: 503, and the client must assume the token is still
         // valid.
         log_.error("[AuthServer] revoke from {}: token not revoked: {}", peer, why);
         HttpResponse r;
         reply_oauth2_error(r, HttpStatus::service_unavailable, "temporarily_unavailable",
                            "The token could not be revoked. Try again later.");
-        conn->send_response(r);
+        deferred->respond(r);
     };
 
     pool_.execute(session_revoke_sql(token, hint),
-        [this, conn, peer, fail](std::vector<PgResult> results) {
+        [this, deferred, peer, fail](std::vector<PgResult> results) {
             if (results.empty() || !results[0].ok()) {
                 const char* msg = results.empty() ? nullptr : results[0].error_message();
                 fail(msg ? msg : "no answer to the revocation");
@@ -1248,7 +1276,7 @@ void AuthServer::revoke_token(std::shared_ptr<HttpConnection> conn,
 
             HttpResponse r;
             r.set_status(HttpStatus::ok);
-            conn->send_response(r);
+            deferred->respond(r);
         },
         fail,
         // quiet: the statement carries the token. A repeat after a lost
@@ -1257,12 +1285,12 @@ void AuthServer::revoke_token(std::shared_ptr<HttpConnection> conn,
         /*quiet=*/true, PgRetry::if_lost);
 }
 
-void AuthServer::revoke_session(std::shared_ptr<HttpConnection> conn,
+void AuthServer::revoke_session(std::shared_ptr<DeferredResponse> deferred,
                                 const std::string& access_token,
                                 bool browser, const std::string& peer)
 {
     db_platform::close_session(pool_, access_token,
-        [this, conn, browser, peer](const db_platform::SessionCloseResult& result) {
+        [this, deferred, browser, peer](const db_platform::SessionCloseResult& result) {
             using Status = db_platform::SessionCloseResult::Status;
 
             HttpResponse r;
@@ -1302,22 +1330,22 @@ void AuthServer::revoke_session(std::shared_ptr<HttpConnection> conn,
                     break;
             }
 
-            conn->send_response(r);
+            deferred->respond(r);
         });
 }
 
-void AuthServer::revoke_with_refresh(std::shared_ptr<HttpConnection> conn,
+void AuthServer::revoke_with_refresh(std::shared_ptr<DeferredResponse> deferred,
                                      const std::string& access_token,
                                      const std::string& refresh_token,
                                      const std::string& peer)
 {
-    const auto fail = [this, conn, peer](std::string_view why) {
+    const auto fail = [this, deferred, peer](std::string_view why) {
         log_.error("[AuthServer] revoke from {}: session not closed: {}", peer, why);
         HttpResponse r;
         clear_secure_cookies(r);
         reply_oauth2_error(r, HttpStatus::service_unavailable, "temporarily_unavailable",
                            "The session could not be closed. Try again later.");
-        conn->send_response(r);
+        deferred->respond(r);
     };
 
     // quiet: the statement carries both tokens, the refresh token among them — the
@@ -1325,7 +1353,7 @@ void AuthServer::revoke_with_refresh(std::shared_ptr<HttpConnection> conn,
     pool_.execute(fmt::format("SELECT daemon.refresh_token({}, {})",
                               pq_quote_literal(access_token),
                               pq_quote_literal(refresh_token)),
-        [this, conn, peer, fail](std::vector<PgResult> results) {
+        [this, deferred, peer, fail](std::vector<PgResult> results) {
             if (results.empty() || !results[0].ok() ||
                 results[0].rows() == 0 || results[0].columns() == 0) {
                 const char* msg = results.empty() ? nullptr : results[0].error_message();
@@ -1375,7 +1403,7 @@ void AuthServer::revoke_with_refresh(std::shared_ptr<HttpConnection> conn,
                 HttpResponse r;
                 clear_secure_cookies(r);
                 r.set_status(HttpStatus::ok);
-                conn->send_response(r);
+                deferred->respond(r);
                 return;
             }
 
@@ -1385,7 +1413,7 @@ void AuthServer::revoke_with_refresh(std::shared_ptr<HttpConnection> conn,
                 return;
             }
 
-            revoke_session(conn, renewed, /*browser=*/true, peer);
+            revoke_session(deferred, renewed, /*browser=*/true, peer);
         },
         [fail](std::string_view error) {
             fail(error);

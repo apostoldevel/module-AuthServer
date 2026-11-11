@@ -2,8 +2,8 @@
 
 // RFC 7009 token revocation, the body form of /oauth2/revoke: which values reach
 // the database, the statement sent and the reading of its answer. Kept apart
-// from AuthServer.cpp so that the part deciding between 200 and 503 can be
-// tested without a database.
+// from AuthServer.cpp so that the part deciding between 200, 400 and 503 can
+// be tested without a database.
 //
 // Needs daemon.session_revoke — db-platform 1.2.32 or later.
 
@@ -12,6 +12,7 @@
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 
@@ -47,6 +48,61 @@ inline bool plausible_token(std::string_view token)
     return true;
 }
 
+/// The longest token value passed to the database, in bytes.
+///
+/// A token is carried in a request header (Authorization: Bearer) or in a URL
+/// (id_token_hint), and a common front proxy takes at most 8 KiB for either
+/// (nginx: large_client_header_buffers 4 8k), so no token that can be used
+/// through one is longer. An id token has no upper bound of its own, though —
+/// with the profile scope it carries the user's profile — so a value past this
+/// limit is refused out loud (400), never answered as revoked.
+inline constexpr std::size_t k_max_revoke_token = 8192;
+
+/// What becomes of the token of a body-form revocation before the database.
+struct RevokeTokenCheck
+{
+    enum class Verdict
+    {
+        send,        ///< pass it to the database
+        malformed,   ///< the request itself is wrong: 400 invalid_request
+    };
+
+    Verdict     verdict = Verdict::malformed;
+    const char* description = "";   ///< error_description of a 400; never null
+};
+
+/// Decide what to do with @p token, the value of the body's "token" parameter
+/// as decoded.
+///
+/// A value no token can have — a space, a control character, a byte outside
+/// printable ASCII — is a malformed request, not a token that is not ours: every
+/// token issued is printable ASCII, so such a value is one mangled on its way
+/// here. A base64 token holds '+', which a form body must send as %2B and which
+/// decodes to a space when sent bare; a token read from a file brings its line
+/// feed. Answered 200, such a request would tell the client its token is
+/// revoked while the token lives on.
+inline RevokeTokenCheck check_revoke_token(std::string_view token)
+{
+    using Verdict = RevokeTokenCheck::Verdict;
+
+    if (token.empty())
+        return {Verdict::malformed, "Parameter value token cannot be empty."};
+
+    if (token.size() > k_max_revoke_token)
+        return {Verdict::malformed, "Parameter value token is too long."};
+
+    if (token.find(' ') != std::string_view::npos)
+        return {Verdict::malformed,
+                "Parameter value token contains a space; in a form body a '+' "
+                "must be sent as %2B."};
+
+    if (!plausible_token(token))
+        return {Verdict::malformed,
+                "Parameter value token is not printable ASCII; no token is."};
+
+    return {Verdict::send, ""};
+}
+
 /// SELECT * FROM daemon.session_revoke(token, hint). The database looks the
 /// token up among access, refresh and id tokens alike and only accepts the hint
 /// (§2.1 lets the server search past it). So only the two hints RFC 7009 defines
@@ -54,7 +110,7 @@ inline bool plausible_token(std::string_view token)
 /// must not be able to make the statement fail.
 ///
 /// The statement carries the token: run it quiet. @p token is expected to have
-/// passed plausible_token().
+/// passed check_revoke_token() with Verdict::send.
 inline std::string session_revoke_sql(std::string_view token, std::string_view hint)
 {
     const bool known = hint == "access_token" || hint == "refresh_token";

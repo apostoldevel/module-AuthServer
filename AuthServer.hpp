@@ -37,7 +37,7 @@ class Application;
 //   GET  /oauth2/identifier — GET form of identifier lookup
 //   POST /oauth2/token      — token endpoint (all grant types)
 //   POST /oauth2/identifier — identifier lookup
-//   POST /oauth2/revoke     — RFC 7009 token revocation (access or refresh
+//   POST /oauth2/revoke     — RFC 7009 token revocation (access, refresh or id
 //                             token, its session closed with it), or the
 //                             browser's sign-out — see do_revoke below
 //
@@ -109,15 +109,24 @@ private:
     /// access token is renewed before closing.
     void do_revoke(const HttpRequest& req, HttpResponse& resp);
 
-    /// The body form: daemon.session_revoke(@p token, @p hint) and answer @p conn —
-    /// 200 whether the token was revoked or not found, 503 on any failure.
-    void revoke_token(std::shared_ptr<HttpConnection> conn,
+    /// Arm the deadline of a revocation's answer on @p conn: past kRevokeWindow
+    /// with no answer the client is told 503 (§2.2.1) — and with @p browser the
+    /// credential cookies are erased on it, as on every answer of that form. Every
+    /// branch below answers through the returned object, so the first answer,
+    /// the database's or the deadline's, is the only one.
+    std::shared_ptr<DeferredResponse> arm_revoke(std::shared_ptr<HttpConnection> conn,
+                                                 bool browser, const std::string& peer);
+
+    /// The body form: daemon.session_revoke(@p token, @p hint) and answer through
+    /// @p deferred — 200 whether the token was revoked or not found, 503 on any
+    /// failure.
+    void revoke_token(std::shared_ptr<DeferredResponse> deferred,
                       const std::string& token, const std::string& hint,
                       const std::string& peer);
 
-    /// Close the session @p access_token names and answer @p conn. With
-    /// @p browser the answer also erases the credential cookies.
-    void revoke_session(std::shared_ptr<HttpConnection> conn,
+    /// Close the session @p access_token names and answer through @p deferred.
+    /// With @p browser the answer also erases the credential cookies.
+    void revoke_session(std::shared_ptr<DeferredResponse> deferred,
                         const std::string& access_token,
                         bool browser, const std::string& peer);
 
@@ -126,7 +135,7 @@ private:
     /// daemon.session_close while its session and refresh token live on; the
     /// database, not this process's clock, decides which of the two it is —
     /// RefreshToken hands a still-valid token back unchanged.
-    void revoke_with_refresh(std::shared_ptr<HttpConnection> conn,
+    void revoke_with_refresh(std::shared_ptr<DeferredResponse> deferred,
                              const std::string& access_token,
                              const std::string& refresh_token,
                              const std::string& peer);

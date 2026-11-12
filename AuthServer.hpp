@@ -186,6 +186,13 @@ private:
                                    std::string_view error,
                                    std::string_view description);
 
+    /// 401 invalid_client from the token endpoint (RFC 6749 §5.2). When the
+    /// client authenticated through the Authorization header, the challenge
+    /// names the scheme it used (Basic); reply_oauth2_error's Bearer challenge
+    /// belongs to protected resources, not to client authentication.
+    static void reply_invalid_client(HttpResponse& resp, bool by_header,
+                                     std::string_view description);
+
     static void redirect_error(HttpResponse& resp, std::string_view location,
                                int code, std::string_view error,
                                std::string_view message);
@@ -290,6 +297,15 @@ private:
     /// grant is for confidential clients (RFC 6749 §4.4), and a secret handed
     /// out to anyone who sends the right Origin makes the client public.
     bool client_credentials_by_origin_ = true;
+
+    /// module.AuthServer.jwt_bearer (default false). The JWT bearer grant
+    /// (RFC 7523) on /oauth2/token. Off: the grant is refused with
+    /// 400 unsupported_grant_type before the database is asked. On: the
+    /// client must authenticate with its own client_id and client_secret
+    /// (see jwt_bearer_client), or the answer is 401 invalid_client.
+    /// Read when the module is created: a change takes effect when the
+    /// worker is restarted (a SIGHUP of a master/worker setup does that).
+    bool jwt_bearer_ = false;
 
     // JWKS key cache (runtime, per-provider)
     struct ProviderKeyCache {

@@ -501,7 +501,7 @@ family of URL-parsing disagreements between the checker and the browser.
 3. **Resource Owner Password Credentials** — used with trusted applications that are part of the service itself.
 4. **Client Credentials** — used when the client (application) accesses the API without a user authorization context.
 5. **Token Exchange** ([RFC 8693](https://tools.ietf.org/html/rfc8693)) — used to obtain a new access token before the current one expires.
-6. **JWT Bearer** — used to authenticate using a JWT token issued by an external system (e.g., Google).
+6. **JWT Bearer** — used to authenticate using a JWT token issued by an external system (e.g., Google). Disabled by default; see [JWT Bearer Grant](#jwt-bearer-grant).
 
 ## Authorization Grant Types
 
@@ -843,12 +843,14 @@ If the client credentials are valid and the provided token has not expired, the 
 
 This grant type allows authentication using a JWT token issued by an external system (for example, Google).
 
+The grant is **disabled by default**: the server answers `400 unsupported_grant_type` without reaching the database. Enable it with `"jwt_bearer": true` in `module.AuthServer` (see [Configuration](#configuration)). When enabled, the client must authenticate with its own `client_id` and `client_secret`; the secret is never filled in from the `Origin` header, and the application of an external provider is not accepted as a client. The parameters must be sent in the request body, not in the URL. A missing or wrong client authentication is answered with `401 invalid_client` (with `WWW-Authenticate: Basic` when the credentials came in the `Authorization` header).
+
 **Request parameters:**
 
 | Field | Value | Description |
 | --- | :---: | --- |
-| client_id | `client_id` | **Recommended.** The client identifier. Not validated at the transport layer for this grant type — the full payload is forwarded to the database. |
-| client_secret | `client_secret` | **Recommended.** The client secret. Not validated at the transport layer for this grant type — the full payload is forwarded to the database. |
+| client_id | `client_id` | **Required.** The client identifier, unless sent in the `Authorization` header. |
+| client_secret | `client_secret` | **Required.** The client secret, unless sent in the `Authorization` header. |
 | grant_type | urn:ietf:params:oauth:grant-type:jwt-bearer | **Required.** This field must contain the value `urn:ietf:params:oauth:grant-type:jwt-bearer`. |
 | assertion | `assertion` | **Required.** The JWT token issued by the external system. |
 
@@ -909,13 +911,18 @@ Configuration
 
 ```json
 {
-  "modules": {
+  "module": {
     "AuthServer": {
-      "enabled": true
+      "enable": true,
+      "jwt_bearer": false
     }
   }
 }
 ```
+
+| Key (`module.AuthServer.*`) | Default | Meaning |
+| --- | :---: | --- |
+| `jwt_bearer` | `false` | Accept the [JWT Bearer Grant](#jwt-bearer-grant) on `/oauth2/token`, with client authentication. Read at worker start. |
 
 Installation
 -

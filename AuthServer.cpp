@@ -1,6 +1,7 @@
 #if defined(WITH_POSTGRESQL) && defined(WITH_SSL)
 
 #include "AuthServer.hpp"
+#include "JwtBearerClient.hpp"
 #include "SecretFill.hpp"
 #include "TokenRevocation.hpp"
 #include "apostol/application.hpp"
@@ -135,6 +136,10 @@ AuthServer::AuthServer(Application& app)
     // has moved its browsers off client_credentials turns it off.
     client_credentials_by_origin_ =
         app.config().get_bool("module.AuthServer.client_credentials_by_origin", true);
+
+    // Default false: the grant turns a third party's assertion into a session,
+    // so a deployment that needs it says so and gets client authentication.
+    jwt_bearer_ = app.config().get_bool("module.AuthServer.jwt_bearer", false);
 }
 
 // ─── check_location ─────────────────────────────────────────────────────────
@@ -294,6 +299,18 @@ void AuthServer::reply_oauth2_error(HttpResponse& resp, HttpStatus status,
     resp.set_status(status)
         .set_body(fmt::format(R"({{"error":"{}","error_description":"{}"}})",
                               json_escape(error), json_escape(description)),
+                  "application/json");
+}
+
+void AuthServer::reply_invalid_client(HttpResponse& resp, bool by_header,
+                                      std::string_view description)
+{
+    if (by_header)
+        resp.set_header("WWW-Authenticate", "Basic realm=\"oauth2\"");
+
+    resp.set_status(HttpStatus::unauthorized)
+        .set_body(fmt::format(R"({{"error":"invalid_client","error_description":"{}"}})",
+                              json_escape(description)),
                   "application/json");
 }
 
@@ -881,7 +898,62 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
     std::string auth_username;
     std::string auth_password;
 
-    if (grant_type != "urn:ietf:params:oauth:grant-type:jwt-bearer") {
+    const bool is_jwt_bearer = (grant_type == "urn:ietf:params:oauth:grant-type:jwt-bearer");
+
+    if (is_jwt_bearer) {
+
+        if (!jwt_bearer_) {
+            reply_oauth2_error(resp, HttpStatus::bad_request,
+                               "unsupported_grant_type",
+                               "The JWT bearer grant is not enabled.");
+            return;
+        }
+
+        // Parameters in the entity body only (RFC 6749 §3.2): content_to_json
+        // falls back to the query string when the body is empty, and a client
+        // secret does not belong in a URL.
+        if (req.body.empty()) {
+            reply_oauth2_error(resp, HttpStatus::bad_request,
+                               "invalid_request",
+                               "The request parameters must be sent in the body.");
+            return;
+        }
+
+        // The client authenticates itself: Basic, or client_id and
+        // client_secret in the body (see jwt_bearer_client).
+        const auto auth_header = req.header("Authorization");
+        const bool by_header = !auth_header.empty();
+
+        std::string id = client_id;
+        std::string secret = client_secret;
+
+        if (by_header) {
+            auto auth = parse_authorization(auth_header);
+            if (auth.schema != Authorization::Schema::basic) {
+                // An unsupported authentication method is invalid_client,
+                // answered with the scheme this endpoint accepts (§5.2).
+                reply_invalid_client(resp, true, "Unsupported client authentication method.");
+                return;
+            }
+            id = std::move(auth.username);
+            secret = std::move(auth.password);
+        }
+
+        const auto* app = jwt_bearer_client(providers_, id, secret);
+        if (app == nullptr) {
+            // The client_id is caller input: say only whether it is known.
+            log_.warn("[AuthServer] jwt-bearer refused: client authentication failed "
+                      "(client {}, host {})",
+                      providers_.find_default_by_client_id(id) ? "registered" : "unknown",
+                      get_real_ip(req));
+            reply_invalid_client(resp, by_header, "Client authentication failed.");
+            return;
+        }
+
+        auth_username = app->client_id;
+        auth_password = app->client_secret;
+
+    } else {
 
         const auto auth_header = req.header("Authorization");
         const auto origin = get_origin(req);
@@ -1011,7 +1083,8 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
     const bool is_service = (grant_type == "client_credentials");
 
     // quiet: the statement carries daemon.token's arguments — the end user's
-    // password on grant_type=password, a client secret on client_credentials.
+    // password on grant_type=password, a client secret on client_credentials
+    // and on the JWT bearer grant.
     pool_.execute(std::move(sql),
         // on_result
         [conn, hostname, is_service](std::vector<PgResult> results) {

@@ -21,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace apostol
 {
@@ -299,19 +300,31 @@ private:
     /// out to anyone who sends the right Origin makes the client public.
     bool client_credentials_by_origin_ = true;
 
-    /// module.AuthServer.jwt_bearer (default false). The JWT bearer grant
-    /// (RFC 7523) on /oauth2/token. Off: the grant is refused with
-    /// 400 unsupported_grant_type before the database is asked. On: the
+    /// The client_ids allowed to use the JWT bearer grant (RFC 7523) on
+    /// /oauth2/token: module.AuthServer.jwt_bearer_clients as configured
+    /// (after ${VAR} expansion), kept only when module.AuthServer.jwt_bearer
+    /// is on. Empty — the grant is off: refused with 400
+    /// unsupported_grant_type before the database is asked. Otherwise the
     /// client must authenticate with its own client_id and client_secret
-    /// (see jwt_bearer_client), or the answer is 401 invalid_client.
+    /// (see jwt_bearer_client), or the answer is 401 invalid_client; an
+    /// authenticated client that is not in the list gets
+    /// 400 unauthorized_client.
     /// Read when the module is created: a change takes effect when the
     /// worker is restarted (a SIGHUP of a master/worker setup does that).
-    bool jwt_bearer_ = false;
+    std::vector<std::string> jwt_bearer_clients_;
+
+    /// Reads jwt_bearer and jwt_bearer_clients and says at start what will
+    /// not work: an entry no local client answers to, a key on with no client.
+    void load_jwt_bearer(Application& app);
 
     /// Refusals of the JWT bearer grant while it is off, logged at most once a
     /// minute per worker process with the number held back: they show whether
     /// a client still sends the grant, and a client can cause them at any rate.
     LogGate jwt_bearer_off_log_{std::chrono::minutes(1)};
+
+    /// Refusals of an authenticated client that is not in
+    /// jwt_bearer_clients, on the same terms.
+    LogGate jwt_bearer_unlisted_log_{std::chrono::minutes(1)};
 
     // JWKS key cache (runtime, per-provider)
     struct ProviderKeyCache {

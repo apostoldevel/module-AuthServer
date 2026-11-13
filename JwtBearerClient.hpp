@@ -4,7 +4,10 @@
 
 #include <openssl/crypto.h>
 
+#include <algorithm>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace apostol {
 
@@ -44,6 +47,16 @@ inline const OAuthApp* jwt_bearer_client(const OAuthProviders& providers,
         return nullptr;
 
     return app;
+}
+
+/// Whether an authenticated client may use the JWT bearer grant: its
+/// client_id is in the list (module.AuthServer.jwt_bearer_clients), compared
+/// byte for byte. Asked only after jwt_bearer_client has authenticated it.
+inline bool jwt_bearer_client_allowed(const std::vector<std::string>& allowed,
+                                      std::string_view client_id)
+{
+    return !client_id.empty()
+        && std::find(allowed.begin(), allowed.end(), client_id) != allowed.end();
 }
 
 } // namespace apostol

@@ -843,7 +843,7 @@ If the client credentials are valid and the provided token has not expired, the 
 
 This grant type allows authentication using a JWT token issued by an external system (for example, Google).
 
-The grant is **disabled by default**: the server answers `400 unsupported_grant_type` without reaching the database, and logs the refusal at `notice` with the client address — at most one line a minute per worker process, with the number of refusals held back since the previous one. Enable it with `"jwt_bearer": true` in `module.AuthServer` (see [Configuration](#configuration)). When enabled, the client must authenticate with its own `client_id` and `client_secret`; the secret is never filled in from the `Origin` header, and the application of an external provider is not accepted as a client. The parameters must be sent in the request body, not in the URL. A missing or wrong client authentication is answered with `401 invalid_client` (with `WWW-Authenticate: Basic` when the credentials came in the `Authorization` header).
+The grant is **disabled by default**: the server answers `400 unsupported_grant_type` without reaching the database, and logs the refusal at `notice` with the client address — at most one line a minute per worker process, with the number of refusals held back since the previous one. Enable it with `"jwt_bearer": true` in `module.AuthServer` together with `jwt_bearer_clients` — the `client_id`s allowed to use the grant (see [Configuration](#configuration)); with the key on and no client listed, the grant stays off. When enabled, the client must authenticate with its own `client_id` and `client_secret`; the secret is never filled in from the `Origin` header, and the application of an external provider is not accepted as a client. The parameters must be sent in the request body, not in the URL. A missing or wrong client authentication is answered with `401 invalid_client` (with `WWW-Authenticate: Basic` when the credentials came in the `Authorization` header). A client that has authenticated but is not in `jwt_bearer_clients` is answered with `400 unauthorized_client`, and the refusal is logged at `notice` with the `client_id` and the client address, on the same terms (one line a minute per worker process, with the count held back); the list is consulted only after the client has authenticated. List only confidential clients — those that keep their secret on a server: the secret of an application shipped inside a mobile or browser application is known to anyone who has it, and its authentication proves nothing.
 
 **Request parameters:**
 
@@ -914,7 +914,8 @@ Configuration
   "module": {
     "AuthServer": {
       "enable": true,
-      "jwt_bearer": false
+      "jwt_bearer": false,
+      "jwt_bearer_clients": []
     }
   }
 }
@@ -922,7 +923,8 @@ Configuration
 
 | Key (`module.AuthServer.*`) | Default | Meaning |
 | --- | :---: | --- |
-| `jwt_bearer` | `false` | Accept the [JWT Bearer Grant](#jwt-bearer-grant) on `/oauth2/token`, with client authentication. Read at worker start. |
+| `jwt_bearer` | `false` | Accept the [JWT Bearer Grant](#jwt-bearer-grant) on `/oauth2/token`, with client authentication, from the clients in `jwt_bearer_clients`. Read at worker start. |
+| `jwt_bearer_clients` | `[]` | The `client_id`s of the `default` provider allowed to use the JWT bearer grant, compared byte for byte with the `client_id` in `oauth2/default.json`. An array of strings, each taken as written (an element is not split, even one from `"${VAR}"`); or one string split on commas and blanks — the form a value from the environment takes (`"${JWT_BEARER_CLIENTS}"`). Absent, `null`, empty: the grant stays off even with `jwt_bearer` on. At worker start a warning is logged for an element that is not a non-empty string and for a value that is neither an array nor a string; with `jwt_bearer` on, also for every entry that is not the `client_id` of a non-external application of the `default` provider with a secret, and for no client listed; with `jwt_bearer` off the entries are not checked (an `info` line says so). Read at worker start; the check against `oauth2/` is made then too. |
 
 Installation
 -

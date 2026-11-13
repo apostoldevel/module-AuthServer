@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 
 
 namespace apostol
@@ -182,9 +183,100 @@ AuthServer::AuthServer(Application& app)
     client_credentials_by_origin_ =
         app.config().get_bool("module.AuthServer.client_credentials_by_origin", true);
 
+    load_jwt_bearer(app);
+}
+
+// ─── load_jwt_bearer ────────────────────────────────────────────────────────
+
+/// A comma or an ASCII blank: what separates the entries of a list given as
+/// one string (a value read from a file ends with a newline).
+static bool is_list_separator(char c)
+{
+    return c == ',' || std::isspace(static_cast<unsigned char>(c));
+}
+
+/// @p value for a log line: a byte outside printable ASCII as \xNN, so that a
+/// value from the environment cannot break the line or forge another.
+static std::string shown(std::string_view value)
+{
+    std::string out;
+    out.reserve(value.size());
+    for (unsigned char c : value) {
+        if (c >= 0x20 && c < 0x7f) out += static_cast<char>(c);
+        else out += fmt::format("\\x{:02x}", c);
+    }
+    return out;
+}
+
+void AuthServer::load_jwt_bearer(Application& app)
+{
     // Default false: the grant turns a third party's assertion into a session,
-    // so a deployment that needs it says so and gets client authentication.
-    jwt_bearer_ = app.config().get_bool("module.AuthServer.jwt_bearer", false);
+    // so a deployment that needs it says so and names the clients that may.
+    const bool on = app.config().get_bool("module.AuthServer.jwt_bearer", false);
+
+    // An array of client_ids, taken as written; or one string split on commas
+    // and blanks (newlines included) — the form a value taken from the
+    // environment ("${JWT_BEARER_CLIENTS}") arrives in: substitution happens
+    // inside strings only. The same reading as IpAllowList::configured.
+    // Absent or null — no client.
+    std::vector<std::string> list;
+    if (const auto* cfg = app.module_config("AuthServer")) {
+        if (auto it = cfg->find("jwt_bearer_clients"); it != cfg->end() && !it->is_null()) {
+            const auto& node = *it;
+            if (node.is_array()) {
+                for (const auto& item : node) {
+                    if (item.is_string() && !item.get_ref<const std::string&>().empty())
+                        list.push_back(item.get<std::string>());
+                    else
+                        log_.warn("[AuthServer] jwt_bearer_clients: entry {} ignored "
+                                  "(not a client_id)", shown(item.dump(-1, ' ', true,
+                                  nlohmann::json::error_handler_t::replace)));
+                }
+            } else if (node.is_string()) {
+                const auto& value = node.get_ref<const std::string&>();
+                std::size_t i = 0;
+                while (i < value.size()) {
+                    while (i < value.size() && is_list_separator(value[i])) ++i;
+                    const std::size_t from = i;
+                    while (i < value.size() && !is_list_separator(value[i])) ++i;
+                    if (i > from) list.emplace_back(value, from, i - from);
+                }
+            } else {
+                log_.warn("[AuthServer] jwt_bearer_clients ignored (an array or a "
+                          "string, got {})", node.type_name());
+            }
+        }
+    }
+
+    if (!on) {
+        if (!list.empty())
+            log_.info("[AuthServer] jwt_bearer_clients not checked: jwt_bearer is off");
+        return;
+    }
+
+    // An entry that does not resolve to a client that can authenticate would
+    // switch that client off without a word: say so now, not at the first
+    // refusal. The values come from this configuration, not from a request.
+    for (const auto& id : list) {
+        const auto* client = providers_.find_default_by_client_id(id);
+        if (client == nullptr)
+            log_.warn("[AuthServer] jwt_bearer_clients: \"{}\" is not a client_id of "
+                      "the default provider; it will be refused", shown(id));
+        else if (client->external)
+            log_.warn("[AuthServer] jwt_bearer_clients: \"{}\" is an external "
+                      "application; it will be refused", shown(id));
+        else if (client->client_secret.empty())
+            log_.warn("[AuthServer] jwt_bearer_clients: \"{}\" has no client_secret "
+                      "and cannot authenticate; it will be refused", shown(id));
+    }
+
+    if (list.empty()) {
+        log_.warn("[AuthServer] jwt_bearer is on but jwt_bearer_clients names no "
+                  "client: the JWT bearer grant stays off");
+        return;
+    }
+
+    jwt_bearer_clients_ = std::move(list);
 }
 
 // ─── check_location ─────────────────────────────────────────────────────────
@@ -254,8 +346,13 @@ void AuthServer::heartbeat(std::chrono::system_clock::time_point now)
     refresh_service_token();
 
     std::uint64_t held_back = 0;
-    if (jwt_bearer_off_log_.flush(LogGate::clock::now(), held_back))
+    const auto gate_now = LogGate::clock::now();
+    if (jwt_bearer_off_log_.flush(gate_now, held_back))
         log_.notice("[AuthServer] jwt-bearer refused: grant disabled "
+                    "({} more since the previous notice)", held_back);
+
+    if (jwt_bearer_unlisted_log_.flush(gate_now, held_back))
+        log_.notice("[AuthServer] jwt-bearer refused: client not in jwt_bearer_clients "
                     "({} more since the previous notice)", held_back);
 
     if (now >= next_heartbeat_) {
@@ -959,7 +1056,7 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
 
     if (is_jwt_bearer) {
 
-        if (!jwt_bearer_) {
+        if (jwt_bearer_clients_.empty()) {
             std::uint64_t held_back = 0;
             if (jwt_bearer_off_log_.pass(LogGate::clock::now(), held_back))
                 log_.notice("[AuthServer] jwt-bearer refused: grant disabled "
@@ -1015,6 +1112,21 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
                       providers_.find_default_by_client_id(id) ? "registered" : "unknown",
                       get_real_ip(req));
             reply_invalid_client(resp, by_header, "Client authentication failed.");
+            return;
+        }
+
+        // Only after the client has authenticated: who may use the grant is
+        // not said to a caller that has not proved who it is. A known client
+        // without the grant is unauthorized_client (RFC 6749 §5.2).
+        if (!jwt_bearer_client_allowed(jwt_bearer_clients_, app->client_id)) {
+            std::uint64_t held_back = 0;
+            if (jwt_bearer_unlisted_log_.pass(LogGate::clock::now(), held_back))
+                log_.notice("[AuthServer] jwt-bearer refused: client \"{}\" not in "
+                            "jwt_bearer_clients (host {}; {} more since the previous notice)",
+                            app->client_id, get_real_ip(req), held_back);
+            reply_oauth2_error(resp, HttpStatus::bad_request,
+                               "unauthorized_client",
+                               "The client is not authorized to use the JWT bearer grant.");
             return;
         }
 

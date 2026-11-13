@@ -11,6 +11,7 @@
 #include "apostol/site_config.hpp"
 
 #include "DeferredResponse.hpp"
+#include "LogGate.hpp"
 
 #include "apostol/fetch_client.hpp"
 
@@ -306,6 +307,11 @@ private:
     /// Read when the module is created: a change takes effect when the
     /// worker is restarted (a SIGHUP of a master/worker setup does that).
     bool jwt_bearer_ = false;
+
+    /// Refusals of the JWT bearer grant while it is off, logged at most once a
+    /// minute per worker process with the number held back: they show whether
+    /// a client still sends the grant, and a client can cause them at any rate.
+    LogGate jwt_bearer_off_log_{std::chrono::minutes(1)};
 
     // JWKS key cache (runtime, per-provider)
     struct ProviderKeyCache {

@@ -89,7 +89,7 @@ Quick Start
 
 > For frontend developers — getting a token requires exactly **two possible requests**.
 
-All tokens are issued by a single endpoint. The `Authorization: Basic` header carries `client_id:client_secret` encoded in Base64. Your `client_id`, `client_secret`, and `scope` are provided by the server owner.
+All tokens are issued by a single endpoint. The `Authorization: Basic` header carries `client_id:client_secret` encoded in Base64. As [RFC 6749 §2.3.1](https://tools.ietf.org/html/rfc6749#section-2.3.1) requires, `client_id` and `client_secret` are form-urlencoded before they are joined and Base64-encoded, and the server decodes them: `+` reads as a space and `%XX` as its byte, so a secret containing `+` or `%` must be sent encoded. Your `client_id`, `client_secret`, and `scope` are provided by the server owner. The body must be an object; `grant_type`, `client_id`, `client_secret` and `redirect_uri` must be strings, or the answer is `400 invalid_request`.
 
 ---
 
@@ -843,7 +843,7 @@ If the client credentials are valid and the provided token has not expired, the 
 
 This grant type allows authentication using a JWT token issued by an external system (for example, Google).
 
-The grant is **disabled by default**: the server answers `400 unsupported_grant_type` without reaching the database. Enable it with `"jwt_bearer": true` in `module.AuthServer` (see [Configuration](#configuration)). When enabled, the client must authenticate with its own `client_id` and `client_secret`; the secret is never filled in from the `Origin` header, and the application of an external provider is not accepted as a client. The parameters must be sent in the request body, not in the URL. A missing or wrong client authentication is answered with `401 invalid_client` (with `WWW-Authenticate: Basic` when the credentials came in the `Authorization` header).
+The grant is **disabled by default**: the server answers `400 unsupported_grant_type` without reaching the database, and logs the refusal at `notice` with the client address — at most one line a minute per worker process, with the number of refusals held back since the previous one. Enable it with `"jwt_bearer": true` in `module.AuthServer` (see [Configuration](#configuration)). When enabled, the client must authenticate with its own `client_id` and `client_secret`; the secret is never filled in from the `Origin` header, and the application of an external provider is not accepted as a client. The parameters must be sent in the request body, not in the URL. A missing or wrong client authentication is answered with `401 invalid_client` (with `WWW-Authenticate: Basic` when the credentials came in the `Authorization` header).
 
 **Request parameters:**
 

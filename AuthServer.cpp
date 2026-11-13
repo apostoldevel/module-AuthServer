@@ -2,6 +2,7 @@
 
 #include "AuthServer.hpp"
 #include "JwtBearerClient.hpp"
+#include "LogGate.hpp"
 #include "SecretFill.hpp"
 #include "TokenRevocation.hpp"
 #include "apostol/application.hpp"
@@ -41,6 +42,50 @@ static std::string json_string(const nlohmann::json& j, const char* key)
     if (it->is_string())
         return it->get<std::string>();
     return it->dump();   // number, bool, etc. → their textual representation
+}
+
+// Reads the request parameters of an OAuth 2.0 endpoint, which are strings
+// (RFC 6749 Appendix A). An absent or null parameter reads as its default; a
+// parameter of another type reads as its default too and is remembered in
+// `bad`, so the handler answers invalid_request instead of letting
+// json::value() throw — an exception out of a handler drops the connection
+// unanswered. A body that is not an object has no parameters.
+struct StringParams
+{
+    explicit StringParams(const nlohmann::json& j) : json(j) {}
+
+    const nlohmann::json& json;
+    std::string bad;
+
+    std::string get(const char* key, const char* def = "")
+    {
+        if (!json.is_object())
+            return def;
+        auto it = json.find(key);
+        if (it == json.end() || it->is_null())
+            return def;
+        if (it->is_string())
+            return it->get<std::string>();
+        if (bad.empty())
+            bad = key;
+        return def;
+    }
+
+    std::string message() const
+    {
+        return json.is_object() ? fmt::format("Parameter value {} must be a string.", bad)
+                                : std::string("The request parameters must be an object.");
+    }
+
+    /// True when the body was usable: an object whose parameters read so far
+    /// are strings.
+    bool ok() const { return json.is_object() && bad.empty(); }
+};
+
+// A client identifier or secret with a NUL byte cannot be passed on as text.
+static bool has_nul(std::string_view s)
+{
+    return s.find('\0') != std::string_view::npos;
 }
 
 // Identifies this module in db.session.agent and the event log.
@@ -207,6 +252,11 @@ void AuthServer::heartbeat(std::chrono::system_clock::time_point now)
     // Every beat: cheap when the token is still good, and the only thing that
     // keeps it available to do_identifier without blocking a request on a query.
     refresh_service_token();
+
+    std::uint64_t held_back = 0;
+    if (jwt_bearer_off_log_.flush(LogGate::clock::now(), held_back))
+        log_.notice("[AuthServer] jwt-bearer refused: grant disabled "
+                    "({} more since the previous notice)", held_back);
 
     if (now >= next_heartbeat_) {
         next_heartbeat_ = now + kHeartbeatInterval;
@@ -890,10 +940,17 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
 {
     auto json = content_to_json(req);
 
-    const auto grant_type    = json.value("grant_type", "");
-    const auto client_id     = json.value("client_id", "");
-    const auto client_secret = json.value("client_secret", "");
-    const auto redirect_uri  = json.value("redirect_uri", "");
+    StringParams params(json);
+    const auto grant_type    = params.get("grant_type");
+    const auto client_id     = params.get("client_id");
+    const auto client_secret = params.get("client_secret");
+    const auto redirect_uri  = params.get("redirect_uri");
+
+    if (!params.ok()) {
+        reply_oauth2_error(resp, HttpStatus::bad_request,
+                           "invalid_request", params.message());
+        return;
+    }
 
     std::string auth_username;
     std::string auth_password;
@@ -903,6 +960,11 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
     if (is_jwt_bearer) {
 
         if (!jwt_bearer_) {
+            std::uint64_t held_back = 0;
+            if (jwt_bearer_off_log_.pass(LogGate::clock::now(), held_back))
+                log_.notice("[AuthServer] jwt-bearer refused: grant disabled "
+                            "(host {}; {} more since the previous notice)",
+                            get_real_ip(req), held_back);
             reply_oauth2_error(resp, HttpStatus::bad_request,
                                "unsupported_grant_type",
                                "The JWT bearer grant is not enabled.");
@@ -935,8 +997,14 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
                 reply_invalid_client(resp, true, "Unsupported client authentication method.");
                 return;
             }
-            id = std::move(auth.username);
-            secret = std::move(auth.password);
+            // RFC 6749 §2.3.1: the client identifier and password are
+            // form-urlencoded before they go into the Basic credentials.
+            id = url_decode(auth.username);
+            secret = url_decode(auth.password);
+            if (has_nul(id) || has_nul(secret)) {
+                reply_invalid_client(resp, true, "Client authentication failed.");
+                return;
+            }
         }
 
         const auto* app = jwt_bearer_client(providers_, id, secret);
@@ -968,8 +1036,14 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
                                    "invalid_request", "Invalid authorization schema.");
                 return;
             }
-            auth_username = std::move(auth.username);
-            auth_password = std::move(auth.password);
+            // RFC 6749 §2.3.1, as above.
+            auth_username = url_decode(auth.username);
+            auth_password = url_decode(auth.password);
+            if (has_nul(auth_username) || has_nul(auth_password)) {
+                reply_oauth2_error(resp, HttpStatus::bad_request,
+                                   "invalid_request", "Invalid client credentials.");
+                return;
+            }
         }
 
         if (auth_username.empty()) {
@@ -1073,7 +1147,10 @@ void AuthServer::do_token(const HttpRequest& req, HttpResponse& resp)
     auto sql = fmt::format("SELECT * FROM daemon.token({}, {}, {}::jsonb, {}, {});",
                            pq_quote_literal(auth_username),
                            pq_quote_literal(auth_password),
-                           pq_quote_literal(json.dump()),
+                           // Invalid UTF-8 from a url-decoded form or query
+                           // would make dump() throw: replaced instead.
+                           pq_quote_literal(json.dump(-1, ' ', false,
+                               nlohmann::json::error_handler_t::replace)),
                            pq_quote_literal(agent),
                            pq_quote_literal(host));
 
@@ -1623,12 +1700,20 @@ void AuthServer::do_consent(const HttpRequest& req, HttpResponse& resp)
 
     auto json = content_to_json(req);
 
-    const auto client_id     = json.value("client_id", "");
-    const auto redirect_uri  = json.value("redirect_uri", "");
-    const auto scope         = json.value("scope", "");
-    const auto state         = json.value("state", "");
-    const auto access_type   = json.value("access_type", "");
-    const auto response_type = json.value("response_type", "code");
+    StringParams params(json);
+    const auto client_id     = params.get("client_id");
+    const auto redirect_uri  = params.get("redirect_uri");
+    const auto scope         = params.get("scope");
+    const auto state         = params.get("state");
+    const auto access_type   = params.get("access_type");
+    const auto response_type = params.get("response_type", "code");
+    const auto token_form    = params.get("consent_token");
+    const auto max_age       = params.get("max_age");
+
+    if (!params.ok()) {
+        redirect_error(resp, redirect_err, 400, "invalid_request", params.message());
+        return;
+    }
 
     if (redirect_uri.empty()) {
         redirect_error(resp, redirect_err, 400, "invalid_request",
@@ -1687,7 +1772,6 @@ void AuthServer::do_consent(const HttpRequest& req, HttpResponse& resp)
     }
 
     const auto token_cookie = req.cookie(kCookieConsentToken);
-    const auto token_form   = json.value("consent_token", "");
 
     if (token_cookie.empty() || token_form.empty() || token_cookie != token_form) {
         // The two refusals mean different things and the difference is worth having
@@ -1745,7 +1829,7 @@ void AuthServer::do_consent(const HttpRequest& req, HttpResponse& resp)
     issue_authorization_code(req, resp, session, client_id, redirect_uri,
                              scope, state, access_type,
                              redirect_login, consent_page, redirect_err,
-                             /* consent */ true, json.value("max_age", ""));
+                             /* consent */ true, max_age);
 }
 
 // ─── issue_authorization_code ───────────────────────────────────────────────
@@ -1948,7 +2032,14 @@ void AuthServer::issue_authorization_code(const HttpRequest& req, HttpResponse& 
 void AuthServer::do_identifier(const HttpRequest& req, HttpResponse& resp)
 {
     auto json = content_to_json(req);
-    const auto identifier = json.value("value", "");
+    StringParams params(json);
+    const auto identifier = params.get("value");
+
+    if (!params.ok()) {
+        reply_oauth2_error(resp, HttpStatus::bad_request,
+                           "invalid_request", params.message());
+        return;
+    }
 
     if (identifier.empty()) {
         reply_oauth2_error(resp, HttpStatus::bad_request,
